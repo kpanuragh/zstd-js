@@ -6,6 +6,9 @@ var fse = require('./fse');
 var fseDecode = require('./fse-decode');
 var BitReader = require('./bitstream').BitReader;
 
+// Zero bytes placed on each side of a stream so reads never fall outside it.
+var PAD = 4;
+
 /**
  * Read a Huffman_Tree_Description.
  * @returns {{nbBits: Uint8Array, maxBits: number, size: number}}
@@ -149,29 +152,28 @@ function buildDecodeTable(nbBits, maxBits) {
  */
 function decodeStream(bytes, table, count, out, outOffset) {
   var reader = new BitReader(bytes);
-  var position = reader.pos;
+
+  // Pad both sides so a four-byte read is always in bounds; the loop then has
+  // no edge cases and stays tight.
+  var stream = Buffer.alloc(bytes.length + PAD * 2);
+  bytes.copy(stream, PAD);
+
+  var position = reader.pos + PAD * 8;
 
   var maxBits = table.maxBits;
   var mask = (1 << maxBits) - 1;
   var symbols = table.symbol;
   var lengths = table.bits;
-  var fastLimit = bytes.length - 4;
 
   for (var i = 0; i < count; i++) {
     var low = position - maxBits + 1;
-    var index;
-
     var byteIndex = low >> 3;
-    if (low >= 0 && byteIndex <= fastLimit) {
-      var word = bytes[byteIndex] |
-        (bytes[byteIndex + 1] << 8) |
-        (bytes[byteIndex + 2] << 16) |
-        (bytes[byteIndex + 3] << 24);
-      index = (word >>> (low & 7)) & mask;
-    } else {
-      reader.pos = position;
-      index = reader.peek(maxBits);
-    }
+
+    var word = stream[byteIndex] |
+      (stream[byteIndex + 1] << 8) |
+      (stream[byteIndex + 2] << 16) |
+      (stream[byteIndex + 3] << 24);
+    var index = (word >>> (low & 7)) & mask;
 
     var length = lengths[index];
     if (length === 0) throw new Error('invalid Huffman code in literals stream');

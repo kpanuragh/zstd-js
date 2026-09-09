@@ -13,6 +13,38 @@ var BitReader = require('./bitstream').BitReader;
 var POW2 = new Float64Array(33);
 for (var p2 = 0; p2 < 33; p2++) POW2[p2] = Math.pow(2, p2);
 
+var MASKS = new Int32Array(26);
+for (var mk = 1; mk <= 25; mk++) MASKS[mk] = (1 << mk) - 1;
+
+// Bytes of zero padding placed on each side of a bitstream before decoding.
+// With them, a four-byte read is always in bounds, so the extraction below
+// needs no edge cases and stays small enough for V8 to inline.
+var PAD = 4;
+
+/**
+ * Read `nbBits` ending at bit `pos` of a padded stream. Up to 25 bits, which
+ * is what a 32-bit word covers alongside a seven-bit offset.
+ */
+function extract(bytes, pos, nbBits) {
+  if (nbBits === 0) return 0;
+
+  var low = pos - nbBits + 1;
+  var byteIndex = low >> 3;
+  var word = bytes[byteIndex] |
+    (bytes[byteIndex + 1] << 8) |
+    (bytes[byteIndex + 2] << 16) |
+    (bytes[byteIndex + 3] << 24);
+
+  return (word >>> (low & 7)) & MASKS[nbBits];
+}
+
+/** Copy a bitstream with padding on both sides. */
+function padStream(stream) {
+  var padded = Buffer.alloc(stream.length + PAD * 2);
+  stream.copy(padded, PAD);
+  return padded;
+}
+
 var DICT_ID_SIZE = [0, 1, 2, 4];
 var FCS_SIZE = [0, 2, 4, 8];
 
@@ -216,11 +248,19 @@ function decodeSequences(bytes, offset, end, tables) {
   var ml = tableForMode(mlMode, bytes, at, ML_DEFAULT, tables.ml, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX);
   at += ml.size;
 
-  var reader = new BitReader(bytes.subarray(at, end));
+  var raw = bytes.subarray(at, end);
+  var reader = new BitReader(raw);
 
-  var llState = reader.readBits(ll.table.accuracyLog);
-  var ofState = reader.readBits(of.table.accuracyLog);
-  var mlState = reader.readBits(ml.table.accuracyLog);
+  // Work on a padded copy so every read is a plain in-bounds word load.
+  var stream = padStream(raw);
+  var position = reader.pos + PAD * 8;
+
+  var llState = extract(stream, position, ll.table.accuracyLog);
+  position -= ll.table.accuracyLog;
+  var ofState = extract(stream, position, of.table.accuracyLog);
+  position -= of.table.accuracyLog;
+  var mlState = extract(stream, position, ml.table.accuracyLog);
+  position -= ml.table.accuracyLog;
 
   var llSymbols = ll.table.symbol, llBits = ll.table.bits, llBase = ll.table.base;
   var ofSymbols = of.table.symbol, ofBits = of.table.bits, ofBase = of.table.base;
@@ -242,14 +282,40 @@ function decodeSequences(bytes, offset, end, tables) {
     var mlCode = mlSymbols[mlState];
     var ofCode = ofSymbols[ofState];
 
-    offBases[i] = POW2[ofCode] + reader.readBits(ofCode);
-    matchLengths[i] = ML_BASE[mlCode] + reader.readBits(ML_EXTRA[mlCode]);
-    literalLengths[i] = LL_BASE[llCode] + reader.readBits(LL_EXTRA[llCode]);
+    // An offset code can exceed the 25-bit fast path, so it goes through the
+    // reader; the rest never do.
+    // An offset code can exceed what one word covers, so it is taken in two
+    // parts, the more significant first.
+    if (ofCode > 25) {
+      var high = extract(stream, position, ofCode - 16);
+      position -= ofCode - 16;
+      offBases[i] = POW2[ofCode] + high * 65536 + extract(stream, position, 16);
+      position -= 16;
+    } else {
+      offBases[i] = POW2[ofCode] + extract(stream, position, ofCode);
+      position -= ofCode;
+    }
+
+    var mlExtra = ML_EXTRA[mlCode];
+    matchLengths[i] = ML_BASE[mlCode] + extract(stream, position, mlExtra);
+    position -= mlExtra;
+
+    var llExtra = LL_EXTRA[llCode];
+    literalLengths[i] = LL_BASE[llCode] + extract(stream, position, llExtra);
+    position -= llExtra;
 
     if (i < lastIndex) {
-      llState = llBase[llState] + reader.readBits(llBits[llState]);
-      mlState = mlBase[mlState] + reader.readBits(mlBits[mlState]);
-      ofState = ofBase[ofState] + reader.readBits(ofBits[ofState]);
+      var llNb = llBits[llState];
+      llState = llBase[llState] + extract(stream, position, llNb);
+      position -= llNb;
+
+      var mlNb = mlBits[mlState];
+      mlState = mlBase[mlState] + extract(stream, position, mlNb);
+      position -= mlNb;
+
+      var ofNb = ofBits[ofState];
+      ofState = ofBase[ofState] + extract(stream, position, ofNb);
+      position -= ofNb;
     }
   }
 
@@ -304,7 +370,11 @@ function executeSequences(decoded, literals, output, written, reps) {
     }
 
     if (literalLength > 0) {
-      literals.copy(output, written, literalPosition, literalPosition + literalLength);
+      if (literalLength < 24) {
+        for (var l = 0; l < literalLength; l++) output[written + l] = literals[literalPosition + l];
+      } else {
+        literals.copy(output, written, literalPosition, literalPosition + literalLength);
+      }
       literalPosition += literalLength;
       written += literalLength;
     }
@@ -317,14 +387,22 @@ function executeSequences(decoded, literals, output, written, reps) {
       // Source and destination do not overlap, so this is a plain block move.
       output.copy(output, written, from, from + matchLength);
     } else {
-      // Overlapping matches are legal and mean "repeat what you just wrote",
-      // so they have to be copied in order. Repeating whole periods at a time
-      // still beats going byte by byte.
-      var done = 0;
-      while (done < matchLength) {
-        var span = offset < matchLength - done ? offset : matchLength - done;
-        output.copy(output, written + done, from + done, from + done + span);
-        done += span;
+      // An overlapping match means "repeat what you just wrote". Lay down one
+      // period, then double the region repeatedly: because the run is
+      // periodic with this offset, everything already written can be copied
+      // forward in one go. A long run at a short offset takes a handful of
+      // copies instead of thousands.
+      if (offset < 16) {
+        for (var p = 0; p < offset; p++) output[written + p] = output[from + p];
+      } else {
+        output.copy(output, written, from, from + offset);
+      }
+
+      var filled = offset;
+      while (filled < matchLength) {
+        var span = filled < matchLength - filled ? filled : matchLength - filled;
+        output.copy(output, written + filled, written, written + span);
+        filled += span;
       }
     }
     written += matchLength;

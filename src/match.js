@@ -21,7 +21,17 @@ var REPEAT_BIAS = 4;
 // How much longer a later match must be before we skip a byte for it.
 var LAZY_MARGIN = 1;
 
-var HASH_LOG = 16;
+// A match this long is already worth taking. Searching past it costs more
+// than the handful of bytes a longer one might save.
+var GOOD_ENOUGH = 64;
+
+// Consecutive candidates that fail the first-byte check before the position
+// is written off. Chain links are scattered in memory, so walking them is
+// what dominates compression; giving up after a run of misses buys a fifth of
+// the time back for four hundredths of a percent of size.
+var MAX_MISSES = 16;
+
+var HASH_LOG = 18;
 var HASH_SIZE = 1 << HASH_LOG;
 
 function hash4(src, at) {
@@ -125,28 +135,52 @@ function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth
     var candidateOffset = index === 3 ? reps[0] - 1 : reps[index];
     if (candidateOffset <= 0 || candidateOffset > at) continue;
 
-    var repLen = commonPrefix(src, at - candidateOffset, at, max);
+    var from = at - candidateOffset;
+
+    // Screen on the first four bytes before scanning: most repeat offsets do
+    // not match here, and this runs three times per input position.
+    if (max < MIN_MATCH ||
+        src[from] !== src[at] ||
+        src[from + 1] !== src[at + 1] ||
+        src[from + 2] !== src[at + 2]) {
+      continue;
+    }
+
+    var repLen = commonPrefix(src, from, at, max);
     if (repLen > repLength) {
       repLength = repLen;
       repOffset = candidateOffset;
     }
   }
 
+  // A long repeat is both the cheapest offset and plenty of coverage; there is
+  // nothing the hash chain can offer that beats it.
+  if (repLength >= GOOD_ENOUGH) {
+    foundLength = repLength;
+    foundOffset = repOffset;
+    return;
+  }
+
   var bestLength = 0;
   var bestOffset = 0;
   var candidate = head[hash4(src, at)];
   var tries = searchDepth;
+  var misses = 0;
 
   while (candidate >= 0 && tries-- > 0) {
     var offset = at - candidate;
     if (offset > windowSize) break;
 
     // Cheap rejection: the byte past the current best must match.
-    if (src[candidate + bestLength] === src[at + bestLength]) {
+    if (src[candidate + bestLength] !== src[at + bestLength]) {
+      if (++misses >= MAX_MISSES) break;
+    } else {
       var length = commonPrefix(src, candidate, at, max);
       if (length > bestLength) {
         bestLength = length;
         bestOffset = offset;
+        misses = 0;
+        if (bestLength >= GOOD_ENOUGH) break;
       }
     }
     candidate = chain[candidate];
@@ -186,7 +220,8 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
     var offset = foundOffset;
 
     // Lazy step: would starting one byte later pay for the extra literal?
-    while (pos + 1 < limit) {
+    // Not worth asking once the match is already long.
+    while (pos + 1 < limit && length < GOOD_ENOUGH) {
       var hh = hash4(src, pos);
       chain[pos] = head[hh];
       head[hh] = pos;

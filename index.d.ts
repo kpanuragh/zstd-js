@@ -29,8 +29,11 @@ export interface CompressOptions {
   windowSize?: number;
 
   /**
-   * Raw-content dictionary. Matches may reach into it, which helps a great
-   * deal on small payloads that share structure.
+   * A dictionary. Matches may reach into it, which helps a great deal on
+   * small payloads that share structure.
+   *
+   * Either any buffer of representative data, or one trained by
+   * `zstd --train`, whose identifier is then written into the frame.
    *
    * The resulting frame can only be read by a decoder given the same
    * dictionary — this package's `decompress`, libzstd, or `zstd -d -D`.
@@ -53,7 +56,10 @@ export interface DecompressOptions {
 }
 
 /**
- * Decompress a Zstandard frame.
+ * Decompress a Zstandard stream.
+ *
+ * Several frames may follow one another, and skippable frames of user
+ * metadata are stepped over.
  *
  * When the frame carries a content checksum it is verified, so a bad decode
  * fails instead of returning plausible-looking wrong bytes.

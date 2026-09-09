@@ -37,19 +37,31 @@ zstd.decompress(frame, { dictionary: dict });
 
 ### Dictionaries
 
-A dictionary is any buffer of representative data. Matches may reach into it,
-which helps a lot on small payloads that share structure:
+Dictionaries help a great deal on small payloads that share structure, because
+matches may reach into them. Both kinds are supported:
 
 ```js
+// Any buffer of representative data works as a raw-content dictionary
 const dict = require('fs').readFileSync('samples.bin');
 
 const frame = zstd.compress(payload, { dictionary: dict });
 const back = zstd.decompress(frame, { dictionary: dict });
 ```
 
-The frame can only be read by a decoder holding the same dictionary — this
-package, libzstd, or `zstd -d -D samples.bin`. Decoding without it fails
-rather than returning wrong bytes.
+A dictionary trained by the reference tool works too, and is usually better:
+
+```bash
+zstd --train samples/* -o trained.dict
+```
+
+A trained dictionary carries its own entropy tables, starting repeat offsets
+and an identifier; the identifier is written into the frame so a decoder can
+tell which dictionary it needs. On a 1.8 KB JSON record, a trained dictionary
+took the output from 237 bytes to 66.
+
+Either way, the frame can only be read by a decoder holding the same
+dictionary — this package, libzstd, or `zstd -d -D trained.dict`. Decoding
+without it fails rather than returning wrong bytes.
 
 ### Streaming
 
@@ -73,6 +85,12 @@ Both take the same options as their one-shot counterparts. `Compress` also
 accepts `streamHistory`, the number of already-emitted bytes kept available
 for later blocks to match against; it defaults to one block, 128 KB, and
 setting it to `0` matches each block on its own.
+
+### Several frames at once
+
+A Zstandard stream may hold frames back to back, and may carry skippable
+frames of user metadata. `decompress` walks the whole stream, joining the
+content and stepping over anything skippable.
 
 TypeScript definitions ship with the package.
 
@@ -143,9 +161,10 @@ it trails are literal-heavy, where the Huffman loop does most of the work.
 - [x] Decoder, replacing the last dependency
 - [x] Word-at-a-time bit extraction and an inlined Huffman loop
 - [x] Incompressible input detected and passed through
-- [ ] Multi-frame and skippable-frame decoding
-- [ ] Formal dictionary format
-- [ ] Better sequence pricing, to close the gap on JSON
+- [x] Multi-frame and skippable-frame decoding
+- [x] Trained dictionary format, both directions
+- [x] Table modes priced against each other rather than picked by rule
+- [ ] Optimal parsing, to close the gap on JSON
 
 ## Design notes
 
@@ -169,14 +188,15 @@ to 22.
 
 ## Limitations
 
-- JSON-like input compresses about 1.9x larger than real zstd. The match finder
-  already finds the longest matches available — raising `searchDepth` changes
-  nothing — so the remaining gap is in how sequences are priced, not in
-  parsing.
-- Only the first frame of a multi-frame stream is decoded, and skippable
-  frames are not handled.
-- Dictionaries are raw content only; the formal dictionary format with its
-  own entropy tables is not read.
+- JSON-like input compresses about 1.9x larger than real zstd. The match
+  finder already finds the longest matches available, so the gap is in which
+  matches are chosen rather than which exist. Closing it needs a parser that
+  prices whole paths instead of deciding position by position; a first attempt
+  at one came out worse than the current greedy-plus-lazy parser and is not
+  shipped.
+- Trained dictionaries are used for their content, repeat offsets and
+  identifier. Their entropy tables seed the repeat modes but the encoder does
+  not yet emit those modes itself, so a little of their benefit is unused.
 
 ## License
 

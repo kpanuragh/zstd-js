@@ -106,3 +106,74 @@ test('checksum verification catches a corrupted frame', function () {
   }
   assert.ok(caught > 0, 'expected corruption to be detected somewhere');
 });
+
+// A dictionary produced by `zstd --train` carries entropy tables and starting
+// repeat offsets ahead of its content, and is identified by an id.
+test('parses the formal dictionary format', function () {
+  var dictionaryFormat = require('../src/dictionary');
+
+  var raw = dictionaryFormat.parse(DICT);
+  assert.strictEqual(raw.id, 0, 'raw content has no id');
+  assert.ok(raw.content.equals(DICT));
+  assert.deepStrictEqual(raw.reps, [1, 4, 8]);
+  assert.strictEqual(raw.huffman, null);
+});
+
+test('a formal dictionary round-trips and declares its id', function (t) {
+  var fs = require('node:fs');
+  var os = require('node:os');
+  var path = require('node:path');
+  var execFileSync = require('node:child_process').execFileSync;
+
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zstd-js-dict-'));
+  try {
+    // Train a dictionary from samples that share structure.
+    var samples = path.join(dir, 'samples');
+    fs.mkdirSync(samples);
+    for (var i = 0; i < 200; i++) {
+      var rows = [];
+      for (var j = 0; j < 20; j++) {
+        rows.push(JSON.stringify({ id: i * 20 + j, name: 'item' + (i * 20 + j), active: j % 2 === 0 }));
+      }
+      fs.writeFileSync(path.join(samples, 's' + i + '.json'), '[' + rows.join(',') + ']');
+    }
+
+    var dictPath = path.join(dir, 'trained.dict');
+    var sampleFiles = fs.readdirSync(samples).map(function (name) {
+      return path.join(samples, name);
+    });
+
+    try {
+      execFileSync('zstd', ['--train'].concat(sampleFiles, ['-o', dictPath]), { stdio: 'ignore' });
+    } catch (e) {
+      t.skip('zstd CLI cannot train a dictionary here: ' + e.message);
+      return;
+    }
+
+    var trained = fs.readFileSync(dictPath);
+    var dictionaryFormat = require('../src/dictionary');
+    assert.ok(dictionaryFormat.isFormal(trained), 'trained dictionary carries the magic number');
+
+    var parsed = dictionaryFormat.parse(trained);
+    assert.ok(parsed.id > 0, 'formal dictionaries carry an id');
+    assert.ok(parsed.content.length > 0);
+    assert.ok(parsed.huffman, 'entropy tables are present');
+
+    var payload = fs.readFileSync(path.join(samples, 's7.json'));
+    var frame = zstd.compress(payload, { dictionary: trained });
+
+    assert.ok(frame.length < zstd.compress(payload).length, 'the dictionary should help');
+    assert.ok(zstd.decompress(frame, { dictionary: trained }).equals(payload));
+
+    // The reference implementation is the authority on whether the frame is
+    // well formed and genuinely tied to this dictionary.
+    var framePath = path.join(dir, 'frame.zst');
+    fs.writeFileSync(framePath, frame);
+
+    var decoded = execFileSync('zstd', ['-d', '-D', dictPath, '-c', framePath],
+      { maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
+    assert.ok(Buffer.from(decoded).equals(payload), 'zstd -d -D should reproduce the payload');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

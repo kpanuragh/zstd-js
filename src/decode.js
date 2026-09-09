@@ -6,6 +6,7 @@ var c = require('./constants');
 var fseDecode = require('./fse-decode');
 var huffmanDecode = require('./huffman-decode');
 var repcodes = require('./repcodes');
+var dictionaryFormat = require('./dictionary');
 var xxhash = require('./xxhash64');
 var BitReader = require('./bitstream').BitReader;
 
@@ -339,29 +340,70 @@ function executeSequences(decoded, literals, output, written, reps) {
 }
 
 /**
- * Decode one frame.
+ * Decode every frame in `bytes` and join the results.
  *
- * @param {Buffer} bytes
- * @param {{dictionary?: Buffer}} [options]
- * @returns {Buffer}
+ * A Zstandard stream may hold several frames back to back, and may carry
+ * skippable frames - user metadata that decoders step over.
  */
 function decodeFrame(bytes, options) {
-  options = options || {};
-  var dictionary = options.dictionary || Buffer.alloc(0);
+  var pieces = [];
+  var at = 0;
+  var total = 0;
 
-  var header = parseFrameHeader(bytes, 0);
-  var at = header.headerSize;
+  while (at < bytes.length) {
+    if (bytes.length - at < 4) throw new Error('trailing bytes are not a frame');
+
+    var magic = bytes.readUInt32LE(at);
+
+    // Section 3.1.2: a skippable frame is a magic in the reserved range
+    // followed by its size, and carries nothing a decoder needs.
+    if (magic >= c.MAGIC_SKIPPABLE_MIN && magic <= c.MAGIC_SKIPPABLE_MAX) {
+      if (bytes.length - at < 8) throw new Error('truncated skippable frame');
+      var skipSize = bytes.readUInt32LE(at + 4);
+      at += 8 + skipSize;
+      if (at > bytes.length) throw new Error('skippable frame runs past the end');
+      continue;
+    }
+
+    var decoded = decodeSingleFrame(bytes, at, options);
+    pieces.push(decoded.content);
+    total += decoded.content.length;
+    at = decoded.end;
+  }
+
+  if (pieces.length === 0) throw new Error('not a Zstandard frame');
+  if (pieces.length === 1) return pieces[0];
+  return Buffer.concat(pieces, total);
+}
+
+/**
+ * Decode the frame starting at `offset`.
+ *
+ * @returns {{content: Buffer, end: number}}
+ */
+function decodeSingleFrame(bytes, offset, options) {
+  options = options || {};
+  var parsed = options.dictionary
+    ? dictionaryFormat.parse(options.dictionary)
+    : dictionaryFormat.parse(Buffer.alloc(0));
+  var dictionary = parsed.content;
+
+  var header = parseFrameHeader(bytes, offset);
+  var at = offset + header.headerSize;
 
   // Output is preceded by the dictionary, so matches can reach into it.
   var capacity = dictionary.length +
-    (header.contentSize !== null ? header.contentSize : Math.max(bytes.length * 8, 1 << 20));
+    (header.contentSize !== null ? header.contentSize : Math.max((bytes.length - at) * 8, 1 << 20));
   var output = Buffer.alloc(capacity);
   dictionary.copy(output, 0);
 
   var written = dictionary.length;
-  var reps = repcodes.INITIAL.slice();
-  var tables = { ll: null, of: null, ml: null };
-  var huffmanTable = null;
+
+  // A formal dictionary supplies starting repeat offsets and entropy tables
+  // for the repeat modes; a raw one supplies only content.
+  var reps = parsed.reps.slice();
+  var tables = { ll: parsed.tables.ll, of: parsed.tables.of, ml: parsed.tables.ml };
+  var huffmanTable = parsed.huffman;
 
   for (;;) {
     if (at + 3 > bytes.length) throw new Error('truncated block header');
@@ -414,9 +456,14 @@ function decodeFrame(bytes, options) {
     }
   }
 
+  if (header.checksum) at += 4;
+
   // Returning the view avoids copying the whole output again. It is only
   // worth copying when the buffer is much larger than what was decoded.
-  return output.length - written > (written >> 2) ? Buffer.from(content) : content;
+  return {
+    content: output.length - written > (written >> 2) ? Buffer.from(content) : content,
+    end: at
+  };
 }
 
 function totalMatch(decoded) {
@@ -447,6 +494,9 @@ function StreamingDecoder(onData, options) {
   this.onData = onData;
   this.dictionary = options.dictionary || Buffer.alloc(0);
 
+  var parsedDictionary = dictionaryFormat.parse(this.dictionary);
+  this.dictionary = parsedDictionary.content;
+
   this.input = Buffer.alloc(0);
   this.consumed = 0;
 
@@ -456,9 +506,13 @@ function StreamingDecoder(onData, options) {
   this.written = this.dictionary.length;
   this.emitted = this.dictionary.length;
 
-  this.reps = repcodes.INITIAL.slice();
-  this.tables = { ll: null, of: null, ml: null };
-  this.huffmanTable = null;
+  this.reps = parsedDictionary.reps.slice();
+  this.tables = {
+    ll: parsedDictionary.tables.ll,
+    of: parsedDictionary.tables.of,
+    ml: parsedDictionary.tables.ml
+  };
+  this.huffmanTable = parsedDictionary.huffman;
   this.lastBlockSeen = false;
   this.done = false;
 }
@@ -578,6 +632,7 @@ StreamingDecoder.prototype._finish = function () {
 
 exports.StreamingDecoder = StreamingDecoder;
 exports.decodeFrame = decodeFrame;
+exports.decodeSingleFrame = decodeSingleFrame;
 exports.decodeSequences = decodeSequences;
 exports.executeSequences = executeSequences;
 

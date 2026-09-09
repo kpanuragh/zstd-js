@@ -151,36 +151,77 @@ function writeTableDescription(normalized, maxSymbol, accuracyLog) {
 }
 
 /**
- * Build everything needed to encode one symbol stream with a custom table.
- * @returns {{table: object, description: Buffer}|null}
+ * Bits a distribution would spend coding these counts.
+ *
+ * An FSE-coded symbol costs about log2(tableSize / its share) bits, which is
+ * close enough to compare candidate tables without encoding each one.
+ */
+function estimateBits(counts, normalized, maxSymbol, accuracyLog) {
+  var tableSize = 1 << accuracyLog;
+  var bits = 0;
+
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (counts[s] === 0) continue;
+
+    var share = normalized[s];
+    if (share === 0) return Infinity; // cannot code this symbol at all
+    if (share < 0) share = 1;         // "less than one" costs the most
+
+    bits += counts[s] * Math.log2(tableSize / share);
+  }
+  return bits;
+}
+
+/**
+ * Build a custom table, choosing the accuracy log by what it actually costs.
+ *
+ * A larger table models the distribution more closely but has to be
+ * transmitted, so the candidates are priced against each other rather than
+ * picked by a rule of thumb.
+ *
+ * @returns {{table: object, description: Buffer, bits: number}|null}
  */
 function buildCustom(counts, maxSymbol, maxAccuracyLog, sequenceCount) {
   var distinct = 0;
-  var total = 0;
   for (var s = 0; s <= maxSymbol; s++) {
     if (counts[s] > 0) distinct++;
-    total += counts[s];
   }
 
   // The format requires at least two symbols with nonzero probability;
   // a single symbol is expressed with RLE mode instead.
   if (distinct < 2) return null;
 
-  var accuracyLog = chooseAccuracyLog(distinct, maxAccuracyLog, sequenceCount || total);
-  var normalized = normalize(counts, maxSymbol, accuracyLog);
-  if (normalized === null) return null;
+  var smallest = 5;
+  while ((1 << smallest) < distinct && smallest < maxAccuracyLog) smallest++;
 
-  var highest = maxSymbol;
-  while (highest > 0 && normalized[highest] === 0) highest--;
+  var best = null;
 
-  return {
-    table: fse.buildCTable(normalized, accuracyLog, highest),
-    description: writeTableDescription(normalized, maxSymbol, accuracyLog),
-    accuracyLog: accuracyLog
-  };
+  for (var log = smallest; log <= maxAccuracyLog; log++) {
+    var normalized = normalize(counts, maxSymbol, log);
+    if (normalized === null) continue;
+
+    var highest = maxSymbol;
+    while (highest > 0 && normalized[highest] === 0) highest--;
+
+    var description = writeTableDescription(normalized, maxSymbol, log);
+    var cost = estimateBits(counts, normalized, maxSymbol, log) + description.length * 8;
+
+    if (best === null || cost < best.cost) {
+      best = {
+        cost: cost,
+        table: fse.buildCTable(normalized, log, highest),
+        description: description,
+        accuracyLog: log
+      };
+    }
+  }
+
+  if (best === null) return null;
+  return { table: best.table, description: best.description, accuracyLog: best.accuracyLog, bits: best.cost };
 }
 
 exports.normalize = normalize;
 exports.writeTableDescription = writeTableDescription;
 exports.chooseAccuracyLog = chooseAccuracyLog;
+exports.estimateBits = estimateBits;
 exports.buildCustom = buildCustom;

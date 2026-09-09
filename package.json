@@ -1,6 +1,6 @@
 {
   "name": "zstd-js",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Zstandard compression and decompression in pure JavaScript. No WebAssembly, no native bindings - runs anywhere JavaScript does, including React Native and Hermes.",
   "main": "src/index.js",
   "types": "index.d.ts",

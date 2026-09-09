@@ -27,6 +27,13 @@ function writeFrameHeader(contentSize, options) {
   // A dictionary sits behind the frame content, so the window has to span
   // both and a single segment will not do.
   var minimumWindow = options.minimumWindow || 0;
+  var dictionaryId = options.dictionaryId || 0;
+
+  // Section 3.1.1.1.1.6: the flag selects a 0, 1, 2 or 4 byte field.
+  var dictIdFlag = 0;
+  if (dictionaryId > 0) {
+    dictIdFlag = dictionaryId < 256 ? 1 : (dictionaryId < 65536 ? 2 : 3);
+  }
 
   var singleSegment = known && contentSize <= SINGLE_SEGMENT_LIMIT &&
     minimumWindow <= contentSize;
@@ -49,8 +56,8 @@ function writeFrameHeader(contentSize, options) {
   header.writeUInt32LE(c.MAGIC, 0);
   bytes.push(header);
 
-  var descriptor = (fcsFlag << 6) | (singleSegment ? 0x20 : 0) | (checksum << 2);
-  var rest = Buffer.alloc(9);
+  var descriptor = (fcsFlag << 6) | (singleSegment ? 0x20 : 0) | (checksum << 2) | dictIdFlag;
+  var rest = Buffer.alloc(14);
   var p = 0;
   rest[p++] = descriptor;
 
@@ -60,6 +67,10 @@ function writeFrameHeader(contentSize, options) {
     var log = span > 0 ? windowLogFor(span) : 23;
     rest[p++] = ((log - 10) << 3);
   }
+
+  if (dictIdFlag === 1) rest.writeUInt8(dictionaryId, p), p += 1;
+  else if (dictIdFlag === 2) rest.writeUInt16LE(dictionaryId, p), p += 2;
+  else if (dictIdFlag === 3) rest.writeUInt32LE(dictionaryId, p), p += 4;
 
   if (known) {
     if (fcsFlag === 0 && singleSegment) rest.writeUInt8(contentSize, p), p += 1;

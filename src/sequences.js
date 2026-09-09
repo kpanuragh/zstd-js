@@ -88,9 +88,9 @@ function encodeSequences(sequences, reps) {
 
   // Choose how each symbol type is coded. A custom table costs bytes to
   // transmit, so it only pays once there are enough sequences to amortise it.
-  var ll = chooseMode(llCodes, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX, LL_TABLE, count);
-  var of = chooseMode(ofCodes, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX, OF_TABLE, count);
-  var ml = chooseMode(mlCodes, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX, ML_TABLE, count);
+  var ll = chooseMode(llCodes, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX, LL_TABLE, c.LL_DEFAULT_DISTRIBUTION, count);
+  var of = chooseMode(ofCodes, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX, OF_TABLE, c.OF_DEFAULT_DISTRIBUTION, count);
+  var ml = chooseMode(mlCodes, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX, ML_TABLE, c.ML_DEFAULT_DISTRIBUTION, count);
 
   var writer = new BitWriter(1024);
 
@@ -143,7 +143,7 @@ var CUSTOM_TABLE_MIN_SEQUENCES = 24;
  * Decide between Predefined_Mode, RLE_Mode and FSE_Compressed_Mode for one
  * symbol type.
  */
-function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, count) {
+function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, predefinedDistribution, count) {
   var counts = new Uint32Array(maxSymbol + 1);
   var distinct = 0;
   for (var i = 0; i < codes.length; i++) {
@@ -160,9 +160,15 @@ function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, count) {
     };
   }
 
-  if (count >= CUSTOM_TABLE_MIN_SEQUENCES) {
-    var custom = fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog, count);
-    if (custom !== null) {
+  // Price a transmitted table against the predefined distribution rather than
+  // assuming either is better. A custom table has to pay for itself.
+  var custom = count >= CUSTOM_TABLE_MIN_SEQUENCES
+    ? fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog, count)
+    : null;
+
+  if (custom !== null) {
+    var predefinedBits = fseTable.estimateBits(counts, predefinedDistribution, maxSymbol, predefinedTable.accuracyLog);
+    if (custom.bits < predefinedBits) {
       return { mode: c.MODE_FSE, description: custom.description, table: custom.table };
     }
   }

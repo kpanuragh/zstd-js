@@ -7,6 +7,7 @@ var frame = require('./frame');
 var block = require('./block');
 var xxhash = require('./xxhash64');
 var matchFinder = require('./match');
+var dictionaryFormat = require('./dictionary');
 var stream = require('./stream');
 var decode = require('./decode');
 
@@ -30,12 +31,15 @@ function compress(input, options) {
   var src = toBytes(input);
   var checksum = options.checksum === true;
 
-  // A raw-content dictionary is simply data that precedes the frame: matches
-  // may reach into it, and the decoder must be given the same bytes.
-  var dictionary = options.dictionary ? toBytes(options.dictionary) : null;
+  // A dictionary is data that precedes the frame: matches may reach into it,
+  // and the decoder must be given the same bytes. A formal dictionary also
+  // carries its own starting repeat offsets and an identifier.
+  var parsed = options.dictionary ? dictionaryFormat.parse(toBytes(options.dictionary)) : null;
+  var dictionary = parsed ? parsed.content : null;
 
   var parts = [frame.writeFrameHeader(src.length, {
     checksum: checksum,
+    dictionaryId: parsed ? parsed.id : 0,
     minimumWindow: dictionary ? dictionary.length + src.length : 0
   })];
 
@@ -45,8 +49,9 @@ function compress(input, options) {
     return Buffer.concat(parts);
   }
 
-  // Repeat-offset history persists across Compressed_Blocks within a frame.
-  var reps = c.REPEAT_OFFSETS.slice();
+  // Repeat-offset history persists across Compressed_Blocks within a frame,
+  // and starts from the dictionary's values when it supplies them.
+  var reps = parsed ? parsed.reps.slice() : c.REPEAT_OFFSETS.slice();
 
   // One index over the whole input, so a block can match into earlier ones.
   // With a dictionary the index also covers the dictionary bytes, which sit

@@ -2,7 +2,7 @@
 
 Zstandard compression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
-> **Status: 0.1.0.** Compression and decompression both work. The encoder does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets; output lands within a few percent of real zstd on most inputs and beats gzip comfortably. Every frame is verified against libzstd.
+> A complete Zstandard codec with **no dependencies**. Compression does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Decompression reads frames from any encoder, including features this one never emits. Both directions stream, and both support dictionaries. Every frame is verified against libzstd.
 
 ## Install
 
@@ -91,25 +91,42 @@ const frame = zstd.compress('hello world');
 // -> a valid .zst frame, readable by any Zstandard decoder
 ```
 
+### Compression
+
 Measured against Node's native Zstandard (libzstd) and gzip:
 
-| Input | Original | zstd-js | zstd | gzip | vs zstd | vs gzip |
-|---|---|---|---|---|---|---|
-| English text | 45,000 | **64** | 66 | 213 | 0.97x | 0.30x |
-| HTML | 122,500 | **69** | 71 | 442 | 0.97x | 0.16x |
-| Source code | 6,971 | 2,523 | 2,537 | 2,457 | 0.99x | 1.03x |
-| RFC plain text | 112,425 | 28,243 | 27,002 | 25,804 | 1.05x | 1.09x |
-| CSV | 184,579 | 34,096 | 30,260 | 41,935 | 1.13x | 0.81x |
-| Lorem ipsum | 46,080 | 93 | 75 | 253 | 1.24x | 0.37x |
-| JSON | 182,281 | 8,609 | 4,769 | 16,088 | 1.81x | 0.54x |
-| Incompressible | 100,000 | 100,012 | 100,012 | 100,053 | 1.00x | 1.00x |
+| Input | Original | zstd-js | zstd | gzip | vs zstd |
+|---|---|---|---|---|---|
+| English text | 900,000 | **139** | 140 | 2,698 | 0.99x |
+| HTML | 840,000 | 133 | 133 | 2,520 | 1.00x |
+| Source code | 19,545 | **5,680** | 5,872 | 5,481 | 0.97x |
+| RFC plain text | 112,425 | 28,243 | 27,002 | 25,804 | 1.05x |
+| JSON | 907,781 | 51,491 | 27,310 | 102,228 | 1.89x |
+| Incompressible | 900,000 | 900,031 | 900,030 | 900,293 | 1.00x |
 
-Throughput ranges from about 7 MB/s on dense input to over 100 MB/s on
-highly repetitive input.
+Compression runs at roughly 15-22 MB/s on ordinary data, and around 110 MB/s
+on data it recognises as incompressible, which it detects and passes through
+rather than searching.
 
-Incompressible data comes out byte-for-byte the same size as real zstd, since
-both fall back to raw blocks. JSON is the weakest case and the main thing
-left to improve: zstd finds longer matches there than this parser does.
+### Decompression
+
+Against [`fzstd`](https://github.com/101arrowz/fzstd), the other pure-JS
+Zstandard decoder, decoding frames produced by libzstd:
+
+| Input | zstd-js | fzstd | ratio |
+|---|---|---|---|
+| English text | **1,479 MB/s** | 754 MB/s | 1.96x |
+| HTML | **1,476 MB/s** | 761 MB/s | 1.94x |
+| Incompressible | **3,590 MB/s** | 2,297 MB/s | 1.56x |
+| RFC plain text | **101 MB/s** | 85 MB/s | 1.19x |
+| JSON | 305 MB/s | 335 MB/s | 0.91x |
+| Source code | 124 MB/s | 141 MB/s | 0.88x |
+
+Faster on four of six, and substantially so where matches dominate. The two
+it trails are literal-heavy, where the Huffman loop does most of the work.
+
+JSON is the weakest compression case and the main thing left to improve: zstd
+finds shorter, better-priced sequences there than this parser does.
 
 ## Roadmap
 

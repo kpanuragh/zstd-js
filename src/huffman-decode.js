@@ -139,16 +139,45 @@ function buildDecodeTable(nbBits, maxBits) {
   return { symbol: symbol, bits: bits, maxBits: maxBits };
 }
 
-/** Decode `count` symbols from one stream. */
+/**
+ * Decode `count` symbols from one stream.
+ *
+ * This is the hottest loop in decompression, so the bit extraction is inlined
+ * rather than going through BitReader: a code is at most 11 bits, so a 32-bit
+ * word always spans the window plus its offset. Positions near the start of
+ * the stream fall back to the reader, which pads with zeros.
+ */
 function decodeStream(bytes, table, count, out, outOffset) {
   var reader = new BitReader(bytes);
+  var position = reader.pos;
+
+  var maxBits = table.maxBits;
+  var mask = (1 << maxBits) - 1;
+  var symbols = table.symbol;
+  var lengths = table.bits;
+  var fastLimit = bytes.length - 4;
 
   for (var i = 0; i < count; i++) {
-    var index = reader.peek(table.maxBits);
-    var length = table.bits[index];
+    var low = position - maxBits + 1;
+    var index;
+
+    var byteIndex = low >> 3;
+    if (low >= 0 && byteIndex <= fastLimit) {
+      var word = bytes[byteIndex] |
+        (bytes[byteIndex + 1] << 8) |
+        (bytes[byteIndex + 2] << 16) |
+        (bytes[byteIndex + 3] << 24);
+      index = (word >>> (low & 7)) & mask;
+    } else {
+      reader.pos = position;
+      index = reader.peek(maxBits);
+    }
+
+    var length = lengths[index];
     if (length === 0) throw new Error('invalid Huffman code in literals stream');
-    reader.skip(length);
-    out[outOffset + i] = table.symbol[index];
+
+    out[outOffset + i] = symbols[index];
+    position -= length;
   }
 
   return count;

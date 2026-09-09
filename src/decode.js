@@ -9,6 +9,9 @@ var repcodes = require('./repcodes');
 var xxhash = require('./xxhash64');
 var BitReader = require('./bitstream').BitReader;
 
+var POW2 = new Float64Array(33);
+for (var p2 = 0; p2 < 33; p2++) POW2[p2] = Math.pow(2, p2);
+
 var DICT_ID_SIZE = [0, 1, 2, 4];
 var FCS_SIZE = [0, 2, 4, 8];
 
@@ -196,7 +199,7 @@ function decodeSequences(bytes, offset, end, tables) {
   var at = offset + counted.size;
 
   if (counted.count === 0) {
-    return { sequences: [], tables: tables };
+    return { count: 0, tables: tables };
   }
 
   var modes = bytes[at++];
@@ -218,32 +221,42 @@ function decodeSequences(bytes, offset, end, tables) {
   var ofState = reader.readBits(of.table.accuracyLog);
   var mlState = reader.readBits(ml.table.accuracyLog);
 
-  var sequences = new Array(counted.count);
+  var llSymbols = ll.table.symbol, llBits = ll.table.bits, llBase = ll.table.base;
+  var ofSymbols = of.table.symbol, ofBits = of.table.bits, ofBase = of.table.base;
+  var mlSymbols = ml.table.symbol, mlBits = ml.table.bits, mlBase = ml.table.base;
+
+  var LL_BASE = c.LL_BASELINE, LL_EXTRA = c.LL_BITS;
+  var ML_BASE = c.ML_BASELINE, ML_EXTRA = c.ML_BITS;
+
+  // Flat arrays rather than an object per sequence: a dense block holds
+  // thousands of them, and the allocation shows up in profiles.
+  var literalLengths = new Uint32Array(counted.count);
+  var matchLengths = new Uint32Array(counted.count);
+  var offBases = new Uint32Array(counted.count);
+
+  var lastIndex = counted.count - 1;
 
   for (var i = 0; i < counted.count; i++) {
-    var llCode = ll.table.symbol[llState];
-    var mlCode = ml.table.symbol[mlState];
-    var ofCode = of.table.symbol[ofState];
+    var llCode = llSymbols[llState];
+    var mlCode = mlSymbols[mlState];
+    var ofCode = ofSymbols[ofState];
 
-    var offBase = Math.pow(2, ofCode) + reader.readBits(ofCode);
-    var matchLength = c.ML_BASELINE[mlCode] + reader.readBits(c.ML_BITS[mlCode]);
-    var literalLength = c.LL_BASELINE[llCode] + reader.readBits(c.LL_BITS[llCode]);
+    offBases[i] = POW2[ofCode] + reader.readBits(ofCode);
+    matchLengths[i] = ML_BASE[mlCode] + reader.readBits(ML_EXTRA[mlCode]);
+    literalLengths[i] = LL_BASE[llCode] + reader.readBits(LL_EXTRA[llCode]);
 
-    sequences[i] = {
-      literalLength: literalLength,
-      matchLength: matchLength,
-      offBase: offBase
-    };
-
-    if (i < counted.count - 1) {
-      llState = ll.table.base[llState] + reader.readBits(ll.table.bits[llState]);
-      mlState = ml.table.base[mlState] + reader.readBits(ml.table.bits[mlState]);
-      ofState = of.table.base[ofState] + reader.readBits(of.table.bits[ofState]);
+    if (i < lastIndex) {
+      llState = llBase[llState] + reader.readBits(llBits[llState]);
+      mlState = mlBase[mlState] + reader.readBits(mlBits[mlState]);
+      ofState = ofBase[ofState] + reader.readBits(ofBits[ofState]);
     }
   }
 
   return {
-    sequences: sequences,
+    count: counted.count,
+    literalLengths: literalLengths,
+    matchLengths: matchLengths,
+    offBases: offBases,
     tables: { ll: ll.table, of: of.table, ml: ml.table }
   };
 }
@@ -254,37 +267,66 @@ function decodeSequences(bytes, offset, end, tables) {
  * `output` already holds everything decoded so far, including any dictionary,
  * because matches reach back into it.
  */
-function executeSequences(sequences, literals, output, written, reps) {
+function executeSequences(decoded, literals, output, written, reps) {
   var literalPosition = 0;
+  var count = decoded.count;
+  var literalLengths = decoded.literalLengths;
+  var matchLengths = decoded.matchLengths;
+  var offBases = decoded.offBases;
 
-  for (var i = 0; i < sequences.length; i++) {
-    var seq = sequences[i];
+  var rep0 = reps[0];
+  var rep1 = reps[1];
+  var rep2 = reps[2];
+
+  for (var i = 0; i < count; i++) {
+    var literalLength = literalLengths[i];
+    var matchLength = matchLengths[i];
+    var offBase = offBases[i];
     var offset;
 
-    if (seq.offBase > 3) {
-      offset = seq.offBase - 3;
-      reps = [offset, reps[0], reps[1]];
+    if (offBase > 3) {
+      offset = offBase - 3;
+      rep2 = rep1; rep1 = rep0; rep0 = offset;
     } else {
-      var ll0 = seq.literalLength === 0 ? 1 : 0;
-      offset = repcodes.offsetForCode(seq.offBase, reps, ll0);
+      // Section 3.1.1.5: with no literals the three slots shift by one, and
+      // code 3 then means the most recent offset minus one.
+      var index = offBase - 1 + (literalLength === 0 ? 1 : 0);
+      offset = index === 0 ? rep0 : index === 1 ? rep1 : index === 2 ? rep2 : rep0 - 1;
       if (offset <= 0) throw new Error('invalid repeat offset');
-      reps = repcodes.updateForCode(reps, seq.offBase, ll0);
+
+      if (index !== 0) {
+        var previous = rep0;
+        if (index >= 2) rep2 = rep1;
+        rep1 = previous;
+        rep0 = offset;
+      }
     }
 
-    if (seq.literalLength > 0) {
-      literals.copy(output, written, literalPosition, literalPosition + seq.literalLength);
-      literalPosition += seq.literalLength;
-      written += seq.literalLength;
+    if (literalLength > 0) {
+      literals.copy(output, written, literalPosition, literalPosition + literalLength);
+      literalPosition += literalLength;
+      written += literalLength;
     }
 
     if (offset > written) throw new Error('match offset reaches before the start of the stream');
 
-    // Overlapping copies are legal and common, so copy byte by byte.
     var from = written - offset;
-    for (var n = 0; n < seq.matchLength; n++) {
-      output[written + n] = output[from + n];
+
+    if (offset >= matchLength) {
+      // Source and destination do not overlap, so this is a plain block move.
+      output.copy(output, written, from, from + matchLength);
+    } else {
+      // Overlapping matches are legal and mean "repeat what you just wrote",
+      // so they have to be copied in order. Repeating whole periods at a time
+      // still beats going byte by byte.
+      var done = 0;
+      while (done < matchLength) {
+        var span = offset < matchLength - done ? offset : matchLength - done;
+        output.copy(output, written + done, from + done, from + done + span);
+        done += span;
+      }
     }
-    written += seq.matchLength;
+    written += matchLength;
   }
 
   var tail = literals.length - literalPosition;
@@ -293,7 +335,7 @@ function executeSequences(sequences, literals, output, written, reps) {
     written += tail;
   }
 
-  return { written: written, reps: reps };
+  return { written: written, reps: [rep0, rep1, rep2] };
 }
 
 /**
@@ -349,11 +391,9 @@ function decodeFrame(bytes, options) {
       var seq = decodeSequences(bytes, at + decoded.size, blockEnd, tables);
       tables = seq.tables;
 
-      var upperBound = written + decoded.literals.length +
-        seq.sequences.reduce(function (a, s) { return a + s.matchLength; }, 0);
-      output = ensure(output, upperBound);
+      output = ensure(output, written + decoded.literals.length + totalMatch(seq));
 
-      var result = executeSequences(seq.sequences, decoded.literals, output, written, reps);
+      var result = executeSequences(seq, decoded.literals, output, written, reps);
       written = result.written;
       reps = result.reps;
       at = blockEnd;
@@ -374,7 +414,16 @@ function decodeFrame(bytes, options) {
     }
   }
 
-  return Buffer.from(content);
+  // Returning the view avoids copying the whole output again. It is only
+  // worth copying when the buffer is much larger than what was decoded.
+  return output.length - written > (written >> 2) ? Buffer.from(content) : content;
+}
+
+function totalMatch(decoded) {
+  var sum = 0;
+  var lengths = decoded.matchLengths;
+  for (var i = 0; i < decoded.count; i++) sum += lengths[i];
+  return sum;
 }
 
 function ensure(buffer, needed) {
@@ -482,11 +531,9 @@ StreamingDecoder.prototype._advance = function () {
       var seq = decodeSequences(this.input, at + decoded.size, blockEnd, this.tables);
       this.tables = seq.tables;
 
-      var upperBound = this.written + decoded.literals.length +
-        seq.sequences.reduce(function (a, s) { return a + s.matchLength; }, 0);
-      this.output = ensure(this.output, upperBound);
+      this.output = ensure(this.output, this.written + decoded.literals.length + totalMatch(seq));
 
-      var result = executeSequences(seq.sequences, decoded.literals, this.output, this.written, this.reps);
+      var result = executeSequences(seq, decoded.literals, this.output, this.written, this.reps);
       this.written = result.written;
       this.reps = result.reps;
     } else {

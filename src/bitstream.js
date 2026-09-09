@@ -19,6 +19,11 @@
 var POW2 = new Float64Array(64);
 for (var i = 0; i < 64; i++) POW2[i] = Math.pow(2, i);
 
+// Masks for the fast extraction path, which handles up to 25 bits so that a
+// 32-bit word always covers the field plus its bit offset.
+var MASKS = new Int32Array(26);
+for (var m = 0; m <= 25; m++) MASKS[m] = m === 0 ? 0 : ((1 << m) - 1);
+
 function BitWriter(capacity) {
   this.buf = Buffer.alloc(capacity || 1024);
   this.len = 0;
@@ -79,32 +84,78 @@ function BitReader(bytes) {
   var highest = 31 - Math.clz32(last);
   this.bytes = bytes;
   this.pos = (bytes.length - 1) * 8 + highest - 1;
+  // Highest byte index where a 4-byte read stays inside the buffer.
+  this.fastLimit = bytes.length - 4;
 }
 
-BitReader.prototype.readBits = function (nbBits) {
+// Bits are extracted by reading a little-endian word straddling the wanted
+// range and shifting, rather than one bit at a time. Reads near the start of
+// the stream fall back to a padded path, since the fast one would run off the
+// front of the buffer.
+BitReader.prototype.peek = function (nbBits) {
   if (nbBits === 0) return 0;
-  if (this.pos - nbBits < -1) throw new Error('bitstream exhausted');
 
-  var value = 0;
-  for (var n = 0; n < nbBits; n++) {
-    var index = this.pos - nbBits + 1 + n;
-    var bit = (this.bytes[index >> 3] >> (index & 7)) & 1;
-    value += bit * POW2[n];
+  var low = this.pos - nbBits + 1;
+  var byteIndex = low >> 3;
+
+  if (low >= 0 && nbBits <= 25 && byteIndex <= this.fastLimit) {
+    var bytes = this.bytes;
+    var word = bytes[byteIndex] |
+      (bytes[byteIndex + 1] << 8) |
+      (bytes[byteIndex + 2] << 16) |
+      (bytes[byteIndex + 3] << 24);
+    return (word >>> (low & 7)) & MASKS[nbBits];
   }
-  this.pos -= nbBits;
+
+  return this._peekSlow(nbBits, low);
+};
+
+// Handles wide fields and the ends of the stream, where bits below the start
+// read as zero.
+BitReader.prototype._peekSlow = function (nbBits, low) {
+  var value = 0;
+  var bytes = this.bytes;
+  var length = bytes.length;
+
+  for (var n = 0; n < nbBits; n++) {
+    var index = low + n;
+    if (index < 0) continue;
+
+    var byteIndex = index >> 3;
+    if (byteIndex >= length) continue;
+
+    if ((bytes[byteIndex] >> (index & 7)) & 1) value += POW2[n];
+  }
   return value;
 };
 
-// Look at the next `nbBits` without consuming them. Bits past the start of
-// the stream read as zero, which is what a decoder expects at the end.
-BitReader.prototype.peek = function (nbBits) {
-  var value = 0;
-  for (var n = 0; n < nbBits; n++) {
-    var index = this.pos - nbBits + 1 + n;
-    var bit = index < 0 ? 0 : (this.bytes[index >> 3] >> (index & 7)) & 1;
-    value += bit * POW2[n];
+BitReader.prototype.readBits = function (nbBits) {
+  if (nbBits === 0) return 0;
+
+  var pos = this.pos;
+  if (pos - nbBits < -1) throw new Error('bitstream exhausted');
+
+  var low = pos - nbBits + 1;
+  var byteIndex = low >> 3;
+
+  if (low >= 0 && nbBits <= 25 && byteIndex <= this.fastLimit) {
+    var bytes = this.bytes;
+    var word = bytes[byteIndex] |
+      (bytes[byteIndex + 1] << 8) |
+      (bytes[byteIndex + 2] << 16) |
+      (bytes[byteIndex + 3] << 24);
+    this.pos = pos - nbBits;
+    return (word >>> (low & 7)) & MASKS[nbBits];
   }
-  return value;
+
+  // Wider than a word can cover: take the more significant half first.
+  if (nbBits > 25) {
+    var high = this.readBits(nbBits - 16);
+    return high * 65536 + this.readBits(16);
+  }
+
+  this.pos = pos - nbBits;
+  return this._peekSlow(nbBits, low);
 };
 
 BitReader.prototype.skip = function (nbBits) {

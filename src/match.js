@@ -54,8 +54,18 @@ function MatchFinder(src, options) {
  * bytes are reachable as match sources. Used for dictionary content.
  */
 MatchFinder.prototype.prime = function (upTo) {
-  var limit = Math.min(upTo, this.src.length - MIN_MATCH - 1);
-  for (var i = 0; i < limit; i++) {
+  return this.index(0, upTo);
+};
+
+/**
+ * Index a range without searching it.
+ *
+ * A block skipped as incompressible still has to go into the index, or a
+ * later block that does repeat it would find nothing to match against.
+ */
+MatchFinder.prototype.index = function (from, to) {
+  var limit = Math.min(to, this.src.length - MIN_MATCH - 1);
+  for (var i = from; i < limit; i++) {
     var h = hash4(this.src, i);
     this.chain[i] = this.head[h];
     this.head[h] = i;
@@ -75,6 +85,83 @@ function findSequences(src, options) {
   return finder.run(0, src.length, options.reps);
 }
 
+// Scratch for the match search. Returning a pair from a function that runs
+// once per input byte allocated more than the search itself cost, so the
+// result is written here instead.
+var foundLength = 0;
+var foundOffset = 0;
+
+/** Length of the common prefix at `a` and `b`, up to `max` bytes. */
+function commonPrefix(src, a, b, max) {
+  var i = 0;
+  // Compare a word at a time while there is room, then finish byte-wise.
+  while (i + 4 <= max &&
+         src[a + i] === src[b + i] &&
+         src[a + i + 1] === src[b + i + 1] &&
+         src[a + i + 2] === src[b + i + 2] &&
+         src[a + i + 3] === src[b + i + 3]) {
+    i += 4;
+  }
+  while (i < max && src[a + i] === src[b + i]) i++;
+  return i;
+}
+
+/**
+ * Best match reachable from `at`, written into foundLength/foundOffset.
+ *
+ * Recently used offsets are tried first, and a slightly shorter match at one
+ * of them wins, because a repeat code costs a couple of bits where a
+ * spelled-out offset costs a dozen or more.
+ */
+function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth, windowSize) {
+  var ll0 = literalLength === 0 ? 1 : 0;
+  var max = end - at;
+
+  var repLength = 0;
+  var repOffset = 0;
+
+  for (var code = 1; code <= 3; code++) {
+    var index = code - 1 + ll0;
+    var candidateOffset = index === 3 ? reps[0] - 1 : reps[index];
+    if (candidateOffset <= 0 || candidateOffset > at) continue;
+
+    var repLen = commonPrefix(src, at - candidateOffset, at, max);
+    if (repLen > repLength) {
+      repLength = repLen;
+      repOffset = candidateOffset;
+    }
+  }
+
+  var bestLength = 0;
+  var bestOffset = 0;
+  var candidate = head[hash4(src, at)];
+  var tries = searchDepth;
+
+  while (candidate >= 0 && tries-- > 0) {
+    var offset = at - candidate;
+    if (offset > windowSize) break;
+
+    // Cheap rejection: the byte past the current best must match.
+    if (src[candidate + bestLength] === src[at + bestLength]) {
+      var length = commonPrefix(src, candidate, at, max);
+      if (length > bestLength) {
+        bestLength = length;
+        bestOffset = offset;
+      }
+    }
+    candidate = chain[candidate];
+  }
+
+  if (repLength >= MIN_MATCH && repLength + REPEAT_BIAS >= bestLength) {
+    foundLength = repLength;
+    foundOffset = repOffset;
+    return;
+  }
+
+  foundLength = bestLength;
+  foundOffset = bestOffset;
+}
+
 function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
   var sequences = [];
   var literals = Buffer.alloc(end - start);
@@ -84,77 +171,30 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
   var pos = start;
   var limit = end - MIN_MATCH - 1;
 
-  // Longest match reachable from `at`, considering repeat offsets and the
-  // hash chain. Returns length 0 when nothing usable is found.
-  function bestMatchAt(at, literalLength) {
-    var ll0 = literalLength === 0 ? 1 : 0;
-    // A match may run to the end of the block being emitted, no further.
-    var max = end - at;
-
-    var repLength = 0;
-    var repOffset = 0;
-    for (var code = 1; code <= 3; code++) {
-      var candidateOffset = repcodes.offsetForCode(code, reps, ll0);
-      if (candidateOffset <= 0 || candidateOffset > at) continue;
-
-      var repLen = 0;
-      var from = at - candidateOffset;
-      while (repLen < max && src[from + repLen] === src[at + repLen]) repLen++;
-
-      if (repLen > repLength) {
-        repLength = repLen;
-        repOffset = candidateOffset;
-      }
-    }
-
-    var bestLength = 0;
-    var bestOffset = 0;
-    var candidate = head[hash4(src, at)];
-    var tries = searchDepth;
-
-    while (candidate >= 0 && tries-- > 0) {
-      var offset = at - candidate;
-      if (offset > windowSize) break;
-
-      // Cheap rejection: the byte past the current best must match.
-      if (src[candidate + bestLength] === src[at + bestLength]) {
-        var length = 0;
-        while (length < max && src[candidate + length] === src[at + length]) length++;
-        if (length > bestLength) {
-          bestLength = length;
-          bestOffset = offset;
-        }
-      }
-      candidate = chain[candidate];
-    }
-
-    if (repLength >= MIN_MATCH && repLength + REPEAT_BIAS >= bestLength) {
-      return { length: repLength, offset: repOffset };
-    }
-    return { length: bestLength, offset: bestOffset };
-  }
-
-  function insert(at) {
-    var h = hash4(src, at);
-    chain[at] = head[h];
-    head[h] = at;
-  }
-
   while (pos < limit) {
-    var found = bestMatchAt(pos, pos - anchor);
+    bestMatchAt(src, pos, end, pos - anchor, reps, head, chain, searchDepth, windowSize);
 
-    if (found.length < MIN_MATCH) {
-      insert(pos);
+    if (foundLength < MIN_MATCH) {
+      var h = hash4(src, pos);
+      chain[pos] = head[h];
+      head[h] = pos;
       pos++;
       continue;
     }
 
+    var length = foundLength;
+    var offset = foundOffset;
+
     // Lazy step: would starting one byte later pay for the extra literal?
     while (pos + 1 < limit) {
-      insert(pos);
-      var next = bestMatchAt(pos + 1, pos + 1 - anchor);
-      if (next.length >= found.length + LAZY_MARGIN) {
-        found = next;
+      var hh = hash4(src, pos);
+      chain[pos] = head[hh];
+      head[hh] = pos;
+
+      bestMatchAt(src, pos + 1, end, pos + 1 - anchor, reps, head, chain, searchDepth, windowSize);
+      if (foundLength >= length + LAZY_MARGIN) {
+        length = foundLength;
+        offset = foundOffset;
         pos++;
       } else {
         break;
@@ -167,16 +207,21 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
 
     sequences.push({
       literalLength: literalLength,
-      offset: found.offset,
-      matchLength: found.length
+      offset: offset,
+      matchLength: length
     });
 
-    reps = repcodes.resolve(found.offset, literalLength, reps).reps;
+    reps = repcodes.resolve(offset, literalLength, reps).reps;
 
     // Index every position inside the match so later searches can reach them.
-    for (var i = pos; i < pos + found.length && i < limit; i++) insert(i);
+    var indexEnd = pos + length < limit ? pos + length : limit;
+    for (var i = pos; i < indexEnd; i++) {
+      var hi = hash4(src, i);
+      chain[i] = head[hi];
+      head[hi] = i;
+    }
 
-    pos += found.length;
+    pos += length;
     anchor = pos;
   }
 

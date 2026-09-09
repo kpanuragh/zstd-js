@@ -7,13 +7,13 @@
 // held in memory. The frame header omits Frame_Content_Size, since the total
 // is not known when the header is written.
 
-var fzstd = require('fzstd');
-
 var c = require('./constants');
 var frame = require('./frame');
 var block = require('./block');
+var matchFinder = require('./match');
 var repcodes = require('./repcodes');
 var xxhash = require('./xxhash64');
+var decode = require('./decode');
 
 /**
  * @param {(chunk: Buffer, final: boolean) => void} onData receives each piece
@@ -32,6 +32,14 @@ function Compress(onData, options) {
   this.pending = [];
   this.pendingLength = 0;
   this.reps = repcodes.INITIAL.slice();
+
+  // Bytes already emitted that a later block may still match against. Kept to
+  // one block's worth: enough to link neighbouring blocks without making each
+  // block re-index an unbounded history.
+  this.historyLimit = this.options.streamHistory === undefined
+    ? c.BLOCK_SIZE_MAX
+    : this.options.streamHistory;
+  this.history = Buffer.alloc(0);
   this.hasher = this.checksum ? new xxhash.Xxh64Stream(0n) : null;
   this.started = false;
   this.finished = false;
@@ -88,8 +96,28 @@ Compress.prototype._take = function (size) {
 };
 
 Compress.prototype._emit = function (data, last) {
-  var encoded = block.encodeBlock(data, this.reps, this.options);
+  var encoded;
+
+  if (this.history.length > 0 && data.length > 0) {
+    // Index the retained history ahead of this block so matches can reach
+    // back into what has already been emitted.
+    var combined = Buffer.concat([this.history, data]);
+    var finder = new matchFinder.MatchFinder(combined, this.options);
+    finder.prime(this.history.length);
+    encoded = block.encodeBlock(data, this.reps, this.options,
+      finder, this.history.length, combined.length);
+  } else {
+    encoded = block.encodeBlock(data, this.reps, this.options);
+  }
+
   this.reps = encoded.reps;
+
+  if (this.historyLimit > 0 && data.length > 0) {
+    var carried = Buffer.concat([this.history, data]);
+    this.history = carried.length > this.historyLimit
+      ? carried.subarray(carried.length - this.historyLimit)
+      : carried;
+  }
 
   var declared = encoded.type === c.BLOCK_RLE ? encoded.regeneratedSize : encoded.content.length;
   var header = frame.writeBlockHeader(declared, encoded.type, last);
@@ -118,21 +146,23 @@ function toBytes(input) {
 }
 
 /**
- * Streaming decompression, wrapping fzstd's incremental decoder so both
- * directions have the same shape.
+ * Streaming decompression, mirroring {@link Compress}.
+ *
+ * Blocks are decoded as their bytes arrive rather than waiting for the whole
+ * frame.
  */
-function Decompress(onData) {
+function Decompress(onData, options) {
   if (typeof onData !== 'function') {
     throw new TypeError('Decompress requires a callback: new Decompress((chunk, final) => ...)');
   }
-  this.inner = new fzstd.Decompress(function (data, final) {
-    onData(Buffer.from(data.buffer, data.byteOffset, data.byteLength), final);
+  options = options || {};
+  this.inner = new decode.StreamingDecoder(onData, {
+    dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
   });
 }
 
 Decompress.prototype.push = function (chunk, final) {
-  var bytes = toBytes(chunk);
-  this.inner.push(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), !!final);
+  this.inner.push(toBytes(chunk), !!final);
   return this;
 };
 

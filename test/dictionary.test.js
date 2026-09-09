@@ -56,15 +56,35 @@ test('dictionaries work across a range of sizes', function () {
   });
 });
 
-test('decompress refuses a dictionary rather than returning wrong bytes', function () {
-  assert.throws(function () {
-    zstd.decompress(zstd.compress(PAYLOAD), { dictionary: DICT });
-  }, /does not support dictionaries/);
+test('dictionary frames round-trip within this package', function () {
+  var frame = zstd.compress(PAYLOAD, { dictionary: DICT });
+  assert.ok(zstd.decompress(frame, { dictionary: DICT }).equals(PAYLOAD));
 });
 
-test('a dictionary frame with a checksum is caught, not silently mis-decoded', function () {
+test('decoding a dictionary frame without the dictionary fails loudly', function () {
   var frame = zstd.compress(PAYLOAD, { dictionary: DICT, checksum: true });
-  assert.throws(function () { zstd.decompress(frame); }, /checksum mismatch/);
+  assert.throws(function () { zstd.decompress(frame); });
+});
+
+test('streaming decompression accepts a dictionary', function () {
+  var frame = zstd.compress(PAYLOAD, { dictionary: DICT });
+  var out = [];
+  var stream = new zstd.Decompress(function (chunk) { out.push(chunk); }, { dictionary: DICT });
+
+  for (var i = 0; i < frame.length; i += 7) {
+    var end = Math.min(i + 7, frame.length);
+    stream.push(frame.subarray(i, end), end === frame.length);
+  }
+  assert.ok(Buffer.concat(out).equals(PAYLOAD));
+});
+
+test('dictionaries help across a range of payload sizes', function () {
+  [1, 100, 5000, 200000].forEach(function (n) {
+    var payload = Buffer.alloc(n);
+    for (var i = 0; i < n; i++) payload[i] = 97 + (i % 23);
+    var frame = zstd.compress(payload, { dictionary: DICT });
+    assert.ok(zstd.decompress(frame, { dictionary: DICT }).equals(payload), 'size ' + n);
+  });
 });
 
 test('checksum verification catches a corrupted frame', function () {

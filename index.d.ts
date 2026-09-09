@@ -25,9 +25,8 @@ export interface CompressOptions {
    * Raw-content dictionary. Matches may reach into it, which helps a great
    * deal on small payloads that share structure.
    *
-   * Note that the resulting frame can only be read by a decoder given the
-   * same dictionary — libzstd, or `zstd -d -D <dict>`. This package's own
-   * `decompress` cannot read them.
+   * The resulting frame can only be read by a decoder given the same
+   * dictionary — this package's `decompress`, libzstd, or `zstd -d -D`.
    */
   dictionary?: InputType;
 }
@@ -42,11 +41,8 @@ export interface CompressOptions {
 export function compress(input: InputType, options?: CompressOptions): Buffer;
 
 export interface DecompressOptions {
-  /**
-   * Not supported. Passing a dictionary throws, rather than silently
-   * returning wrong bytes.
-   */
-  dictionary?: never;
+  /** The same dictionary the frame was compressed with. */
+  dictionary?: InputType;
 }
 
 /**
@@ -55,8 +51,8 @@ export interface DecompressOptions {
  * When the frame carries a content checksum it is verified, so a bad decode
  * fails instead of returning plausible-looking wrong bytes.
  *
- * @throws if the input is not a valid Zstandard frame, if the checksum does
- *   not match, or if a dictionary is passed.
+ * @throws if the input is not a valid Zstandard frame, or if its content
+ *   checksum does not match.
  */
 export function decompress(input: InputType, options?: DecompressOptions): Buffer;
 
@@ -85,9 +81,15 @@ export class Compress {
   end(): this;
 }
 
-/** Streaming decompressor, mirroring {@link Compress}. */
+/**
+ * Streaming decompressor, mirroring {@link Compress}. Blocks are decoded as
+ * their bytes arrive rather than waiting for the whole frame.
+ */
 export class Decompress {
-  constructor(onData: (chunk: Buffer, final: boolean) => void);
+  constructor(
+    onData: (chunk: Buffer, final: boolean) => void,
+    options?: DecompressOptions
+  );
   push(chunk: InputType, final?: boolean): this;
   end(): this;
 }

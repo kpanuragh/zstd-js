@@ -43,11 +43,13 @@ const dict = Buffer.from(fs.readFileSync('samples.bin'));
 const frame = zstd.compress(payload, { dictionary: dict });
 ```
 
-The frame can then only be read by a decoder holding the same dictionary —
-libzstd, or `zstd -d -D samples.bin`. **This package's own `decompress`
-cannot read dictionary frames**, and passing one throws rather than returning
-wrong bytes. Adding `checksum: true` makes an accidental dictionary-less
-decode fail loudly.
+```js
+const back = zstd.decompress(frame, { dictionary: dict });
+```
+
+The frame can only be read by a decoder holding the same dictionary — this
+package, libzstd, or `zstd -d -D samples.bin`. Decoding without it fails
+rather than returning wrong bytes.
 
 ### Streaming
 
@@ -78,7 +80,7 @@ Every Zstandard implementation for JavaScript is either a native binding or a We
 
 Decoding was already solved in pure JS by [`fzstd`](https://github.com/101arrowz/fzstd). Encoding was not — there is no other pure-JavaScript Zstandard compressor on npm. That is what this package adds.
 
-`decompress` delegates to `fzstd` rather than reimplementing a decoder. It is well tested and MIT licensed, and writing a second one would not have helped anybody.
+Decoding started out delegated to `fzstd`, but dictionary support needed a decoder that could be seeded with dictionary content, so it is now implemented here. The package has no dependencies.
 
 ## Current behaviour
 
@@ -124,10 +126,11 @@ left to improve: zstd finds longer matches there than this parser does.
 - [x] Lazy matching
 - [x] xxhash64 content checksum, one-shot and incremental
 - [x] Streaming API for both directions
-- [x] Dictionary support for compression
-- [x] Cross-block matching
-- [ ] Reading dictionary frames
-- [ ] Optimal parsing
+- [x] Dictionary support, both directions
+- [x] Cross-block matching, one-shot and streaming
+- [x] Decoder, replacing the last dependency
+- [ ] Multi-frame and skippable-frame decoding
+- [ ] Formal dictionary format
 
 ## Design notes
 
@@ -150,15 +153,14 @@ alphabets.
 
 ## Limitations
 
-- **Dictionaries are write-only here.** `compress` can use one; `decompress`
-  cannot, because the underlying decoder has no dictionary support. Frames
-  made with a dictionary need libzstd or the `zstd` CLI to read.
-- Streaming compression matches within each block only. One-shot `compress`
-  indexes the whole input, so it compresses large files better.
 - JSON-like input compresses about 1.8x worse than real zstd. The match finder
   already finds the longest matches available — raising `searchDepth` changes
   nothing — so the remaining gap is in how sequences are priced, not in
   parsing.
+- Only the first frame of a multi-frame stream is decoded, and skippable
+  frames are not handled.
+- Dictionaries are raw content only; the formal dictionary format with its
+  own entropy tables is not read.
 
 ## License
 

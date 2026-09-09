@@ -95,8 +95,29 @@ BitReader.prototype.readBits = function (nbBits) {
   return value;
 };
 
+// Look at the next `nbBits` without consuming them. Bits past the start of
+// the stream read as zero, which is what a decoder expects at the end.
+BitReader.prototype.peek = function (nbBits) {
+  var value = 0;
+  for (var n = 0; n < nbBits; n++) {
+    var index = this.pos - nbBits + 1 + n;
+    var bit = index < 0 ? 0 : (this.bytes[index >> 3] >> (index & 7)) & 1;
+    value += bit * POW2[n];
+  }
+  return value;
+};
+
+BitReader.prototype.skip = function (nbBits) {
+  this.pos -= nbBits;
+};
+
 BitReader.prototype.exhausted = function () {
   return this.pos < 0;
+};
+
+/** Bits still unread. Goes negative once the stream is overrun. */
+BitReader.prototype.remaining = function () {
+  return this.pos + 1;
 };
 
 exports.BitWriter = BitWriter;

@@ -2,14 +2,13 @@
 
 // Zstandard compression in pure JavaScript.
 
-var fzstd = require('fzstd');
-
 var c = require('./constants');
 var frame = require('./frame');
 var block = require('./block');
 var xxhash = require('./xxhash64');
 var matchFinder = require('./match');
 var stream = require('./stream');
+var decode = require('./decode');
 
 function toBytes(input) {
   if (typeof input === 'string') return Buffer.from(input, 'utf8');
@@ -97,55 +96,18 @@ function contentChecksum(src) {
 /**
  * Decompress a Zstandard frame.
  *
- * Decoding is delegated to fzstd, which is a well-tested pure-JavaScript
- * Zstandard decoder. This package exists for the encoder, which had no pure-JS
- * implementation; there was no reason to write a second decoder.
- *
- * When the frame carries a content checksum, it is verified here. fzstd does
- * not check it, and an unverified decode can return plausible-looking wrong
- * bytes rather than failing.
+ * Handles frames from any Zstandard encoder, and verifies the content
+ * checksum when the frame carries one.
  *
  * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
- * @param {{dictionary?: unknown}} [options]
+ * @param {{dictionary?: string|Buffer|Uint8Array|DataView|ArrayBuffer}} [options]
  * @returns {Buffer}
  */
 function decompress(input, options) {
-  if (options && options.dictionary) {
-    throw new Error(
-      'decompress does not support dictionaries. Frames compressed with one ' +
-      'can be read by libzstd or the zstd CLI (zstd -d -D <dict>), but this ' +
-      'package can only produce them, not read them back.');
-  }
-
-  var src = toBytes(input);
-  var out = fzstd.decompress(new Uint8Array(src.buffer, src.byteOffset, src.byteLength));
-  var result = Buffer.from(out.buffer, out.byteOffset, out.byteLength);
-
-  verifyChecksum(src, result);
-  return result;
-}
-
-/**
- * Check the frame's Content_Checksum when it has one.
- *
- * Only a single, non-skippable frame is inspected; anything else is left
- * alone rather than guessed at.
- */
-function verifyChecksum(frameBytes, decoded) {
-  if (frameBytes.length < 9) return;
-  if (frameBytes.readUInt32LE(0) !== c.MAGIC) return;
-
-  // Section 3.1.1.1.1: bit 2 of Frame_Header_Descriptor.
-  var descriptor = frameBytes[4];
-  if ((descriptor & 0x04) === 0) return;
-
-  var stored = frameBytes.readUInt32LE(frameBytes.length - 4);
-  var actual = xxhash.checksum32(decoded);
-
-  if (stored !== actual) {
-    throw new Error('content checksum mismatch: the frame decoded to different ' +
-      'bytes than were compressed (a dictionary may be required)');
-  }
+  options = options || {};
+  return decode.decodeFrame(toBytes(input), {
+    dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
+  });
 }
 
 exports.compress = compress;

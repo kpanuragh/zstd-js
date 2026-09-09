@@ -161,7 +161,7 @@ function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, count) {
   }
 
   if (count >= CUSTOM_TABLE_MIN_SEQUENCES) {
-    var custom = fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog);
+    var custom = fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog, count);
     if (custom !== null) {
       return { mode: c.MODE_FSE, description: custom.description, table: custom.table };
     }

@@ -7,6 +7,8 @@ var fzstd = require('fzstd');
 var c = require('./constants');
 var frame = require('./frame');
 var block = require('./block');
+var xxhash = require('./xxhash64');
+var stream = require('./stream');
 
 function toBytes(input) {
   if (typeof input === 'string') return Buffer.from(input, 'utf8');
@@ -20,17 +22,19 @@ function toBytes(input) {
  * Compress input into a Zstandard frame.
  *
  * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
- * @param {{searchDepth?: number, windowSize?: number}} [options]
+ * @param {{searchDepth?: number, windowSize?: number, checksum?: boolean}} [options]
  * @returns {Buffer}
  */
 function compress(input, options) {
   options = options || {};
   var src = toBytes(input);
+  var checksum = options.checksum === true;
 
-  var parts = [frame.writeFrameHeader(src.length, { checksum: false })];
+  var parts = [frame.writeFrameHeader(src.length, { checksum: checksum })];
 
   if (src.length === 0) {
     parts.push(frame.writeBlockHeader(0, c.BLOCK_RAW, true));
+    if (checksum) parts.push(contentChecksum(src));
     return Buffer.concat(parts);
   }
 
@@ -53,7 +57,17 @@ function compress(input, options) {
     offset += size;
   }
 
+  // Section 3.1.1.4: the frame ends with the low 32 bits of the content's
+  // XXH64, when the descriptor said one is present.
+  if (checksum) parts.push(contentChecksum(src));
+
   return Buffer.concat(parts);
+}
+
+function contentChecksum(src) {
+  var out = Buffer.alloc(4);
+  out.writeUInt32LE(xxhash.checksum32(src), 0);
+  return out;
 }
 
 /**
@@ -74,4 +88,6 @@ function decompress(input) {
 
 exports.compress = compress;
 exports.decompress = decompress;
+exports.Compress = stream.Compress;
+exports.Decompress = stream.Decompress;
 exports.constants = c;

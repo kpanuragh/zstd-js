@@ -25,8 +25,30 @@ Zstandard decoder reads it — the `zstd` CLI, Node's built-in
 `zlib.zstdDecompressSync`, `fzstd`, or this package's own `decompress`.
 
 ```js
-// Tune the match finder
-zstd.compress(data, { searchDepth: 64, windowSize: 1 << 20 });
+// Options
+zstd.compress(data, {
+  checksum: true,       // append the XXH64 content checksum (4 bytes)
+  searchDepth: 64,      // match finder effort, default 32
+  windowSize: 1 << 20   // farthest a match may reach back, default 4 MiB
+});
+```
+
+### Streaming
+
+Neither the whole input nor the whole output has to be in memory:
+
+```js
+const { Compress, Decompress } = require('zstd-js');
+
+const parts = [];
+const stream = new Compress((chunk, final) => parts.push(chunk));
+stream.push(firstChunk);
+stream.push(secondChunk);
+stream.end();
+
+const out = [];
+const decoder = new Decompress((chunk, final) => out.push(chunk));
+decoder.push(frameBytes, true);
 ```
 
 TypeScript definitions ship with the package.
@@ -57,11 +79,11 @@ Measured against Node's native Zstandard (libzstd) and gzip:
 |---|---|---|---|---|---|---|
 | English text | 45,000 | **64** | 66 | 213 | 0.97x | 0.30x |
 | HTML | 122,500 | **69** | 71 | 442 | 0.97x | 0.16x |
-| Source code | 6,971 | 2,541 | 2,536 | 2,457 | 1.00x | 1.03x |
-| RFC plain text | 112,425 | 28,782 | 27,002 | 25,804 | 1.07x | 1.12x |
-| CSV | 184,579 | 35,503 | 30,260 | 41,935 | 1.17x | 0.85x |
+| Source code | 6,971 | 2,523 | 2,537 | 2,457 | 0.99x | 1.03x |
+| RFC plain text | 112,425 | 28,243 | 27,002 | 25,804 | 1.05x | 1.09x |
+| CSV | 184,579 | 34,303 | 30,260 | 41,935 | 1.13x | 0.82x |
 | Lorem ipsum | 46,080 | 93 | 75 | 253 | 1.24x | 0.37x |
-| JSON | 182,281 | 9,552 | 4,769 | 16,088 | 2.00x | 0.59x |
+| JSON | 182,281 | 9,174 | 4,769 | 16,088 | 1.92x | 0.57x |
 | Incompressible | 100,000 | 100,012 | 100,012 | 100,053 | 1.00x | 1.00x |
 
 Throughput ranges from about 7 MB/s on dense input to over 100 MB/s on
@@ -84,10 +106,10 @@ left to improve: zstd finds longer matches there than this parser does.
 - [x] FSE encoder, custom tables with normalisation and table transmission
 - [x] Repeat offsets
 - [x] Lazy matching
-- [ ] Optimal parsing, to close the remaining gap on JSON-like input
-- [ ] xxhash64 content checksum
-- [ ] Streaming API
+- [x] xxhash64 content checksum, one-shot and incremental
+- [x] Streaming API for both directions
 - [ ] Dictionary support
+- [ ] Cross-block matching
 
 ## Design notes
 
@@ -110,11 +132,13 @@ alphabets.
 
 ## Limitations
 
-- No streaming API yet; `compress` and `decompress` are one-shot.
 - No dictionary support.
-- The optional content checksum is not written. Frames are valid without it.
-- JSON-like input compresses about 2x worse than real zstd, because the parser
-  finds shorter matches there. Optimal parsing is the fix and is not done.
+- Matches do not cross block boundaries, so input above 128 KB compresses a
+  little worse than it could.
+- JSON-like input compresses about 1.9x worse than real zstd. The match finder
+  already finds the longest matches available — raising `searchDepth` changes
+  nothing — so the remaining gap is in how sequences are priced, not in
+  parsing.
 
 ## License
 

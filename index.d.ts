@@ -5,6 +5,12 @@ export type InputType = string | Buffer | Uint8Array | DataView | ArrayBuffer;
 
 export interface CompressOptions {
   /**
+   * Append the frame's XXH64 content checksum, so decoders can detect
+   * corruption. Costs 4 bytes. Default false.
+   */
+  checksum?: boolean;
+
+  /**
    * How many candidate positions the match finder examines per position.
    * Higher values compress a little better and run slower. Default 32.
    */
@@ -31,6 +37,38 @@ export function compress(input: InputType, options?: CompressOptions): Buffer;
  * @throws if the input is not a valid Zstandard frame.
  */
 export function decompress(input: InputType): Buffer;
+
+/**
+ * Streaming compressor. Blocks are emitted as input accumulates, so neither
+ * the whole input nor the whole output is held in memory.
+ *
+ * ```js
+ * const parts = [];
+ * const stream = new Compress((chunk, final) => parts.push(chunk));
+ * stream.push(first);
+ * stream.push(second);
+ * stream.end();
+ * ```
+ */
+export class Compress {
+  constructor(
+    onData: (chunk: Buffer, final: boolean) => void,
+    options?: CompressOptions
+  );
+
+  /** Add input. Pass `final` on the last call to close the frame. */
+  push(chunk: InputType, final?: boolean): this;
+
+  /** Finish the frame without adding more input. */
+  end(): this;
+}
+
+/** Streaming decompressor, mirroring {@link Compress}. */
+export class Decompress {
+  constructor(onData: (chunk: Buffer, final: boolean) => void);
+  push(chunk: InputType, final?: boolean): this;
+  end(): this;
+}
 
 /** Format constants from RFC 8878. */
 export interface Constants {

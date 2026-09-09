@@ -6,12 +6,23 @@
 var fse = require('./fse');
 
 /**
- * Pick an accuracy log with enough states to give every present symbol at
- * least one, plus headroom for the frequent ones.
+ * Pick an accuracy log.
+ *
+ * More states model the distribution more precisely, but the table has to be
+ * transmitted, so the table should not outgrow the data it codes. Start with
+ * enough states to give every symbol one, then add headroom while both the
+ * alphabet and the sequence count justify it.
  */
-function chooseAccuracyLog(distinctSymbols, maxLog) {
+function chooseAccuracyLog(distinctSymbols, maxLog, sequenceCount) {
   var log = 5;
-  while ((1 << log) < distinctSymbols * 2 && log < maxLog) log++;
+  while ((1 << log) < distinctSymbols && log < maxLog) log++;
+
+  while (log < maxLog &&
+         (1 << (log + 1)) <= distinctSymbols * 16 &&
+         (1 << (log + 1)) <= sequenceCount) {
+    log++;
+  }
+
   return log;
 }
 
@@ -143,15 +154,19 @@ function writeTableDescription(normalized, maxSymbol, accuracyLog) {
  * Build everything needed to encode one symbol stream with a custom table.
  * @returns {{table: object, description: Buffer}|null}
  */
-function buildCustom(counts, maxSymbol, maxAccuracyLog) {
+function buildCustom(counts, maxSymbol, maxAccuracyLog, sequenceCount) {
   var distinct = 0;
-  for (var s = 0; s <= maxSymbol; s++) if (counts[s] > 0) distinct++;
+  var total = 0;
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (counts[s] > 0) distinct++;
+    total += counts[s];
+  }
 
   // The format requires at least two symbols with nonzero probability;
   // a single symbol is expressed with RLE mode instead.
   if (distinct < 2) return null;
 
-  var accuracyLog = chooseAccuracyLog(distinct, maxAccuracyLog);
+  var accuracyLog = chooseAccuracyLog(distinct, maxAccuracyLog, sequenceCount || total);
   var normalized = normalize(counts, maxSymbol, accuracyLog);
   if (normalized === null) return null;
 

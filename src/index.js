@@ -32,11 +32,15 @@ function compress(input, options) {
     return Buffer.concat(parts);
   }
 
+  // Repeat-offset history persists across Compressed_Blocks within a frame.
+  var reps = c.REPEAT_OFFSETS.slice();
+
   var offset = 0;
   while (offset < src.length) {
     var size = Math.min(c.BLOCK_SIZE_MAX, src.length - offset);
     var last = offset + size >= src.length;
-    var encoded = block.encodeBlock(src.subarray(offset, offset + size), options);
+    var encoded = block.encodeBlock(src.subarray(offset, offset + size), reps, options);
+    reps = encoded.reps;
 
     // Block_Size counts the stored content. For RLE that is the repeat count,
     // which is the regenerated size rather than the one stored byte.

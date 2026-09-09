@@ -5,6 +5,7 @@
 var c = require('./constants');
 var literalsCodec = require('./literals');
 var matchFinder = require('./match');
+var huffman = require('./huffman');
 var sequenceCodec = require('./sequences');
 
 function isRun(src, start, end) {
@@ -19,43 +20,64 @@ function isRun(src, start, end) {
  * Encode one block's worth of input.
  * @returns {{type: number, content: Buffer, regeneratedSize: number}}
  */
-function encodeBlock(src, options) {
+function encodeBlock(src, reps, options) {
   var size = src.length;
 
   if (size > 1 && isRun(src, 0, size)) {
-    return { type: c.BLOCK_RLE, content: Buffer.from([src[0]]), regeneratedSize: size };
+    // Section 3.1.1.5: only Compressed_Blocks contribute to offset history.
+    return { type: c.BLOCK_RLE, content: Buffer.from([src[0]]), regeneratedSize: size, reps: reps };
   }
 
-  var compressed = tryCompressed(src, options);
-  if (compressed !== null && compressed.length < size) {
-    return { type: c.BLOCK_COMPRESSED, content: compressed, regeneratedSize: size };
+  var compressed = tryCompressed(src, reps, options);
+  if (compressed !== null && compressed.content.length < size) {
+    return {
+      type: c.BLOCK_COMPRESSED,
+      content: compressed.content,
+      regeneratedSize: size,
+      reps: compressed.reps
+    };
   }
 
-  return { type: c.BLOCK_RAW, content: src, regeneratedSize: size };
+  return { type: c.BLOCK_RAW, content: src, regeneratedSize: size, reps: reps };
 }
 
 // Build a Compressed_Block: a literals section followed by a sequences
 // section. Returns null when the block cannot be represented this way.
-function tryCompressed(src, options) {
+function tryCompressed(src, reps, options) {
   if (src.length < c.MIN_MATCH + 1) return null;
 
   var found = matchFinder.findSequences(src, options);
   if (found.sequences.length === 0) return null;
 
-  var literals = found.literals;
-  var literalsSection;
+  var literalsSection = encodeLiterals(found.literals);
 
+  var encoded = sequenceCodec.encodeSequences(found.sequences, reps);
+  if (encoded === null) return null;
+
+  return {
+    content: Buffer.concat([literalsSection, encoded.section]),
+    reps: encoded.reps
+  };
+}
+
+// Pick the cheapest representation for the literals: a single repeated byte,
+// Huffman coding, or storing them raw.
+function encodeLiterals(literals) {
   if (literals.length > 1 && isRun(literals, 0, literals.length)) {
-    literalsSection = literalsCodec.writeRleLiterals(literals[0], literals.length);
-  } else {
-    literalsSection = literalsCodec.writeRawLiterals(literals);
+    return literalsCodec.writeRleLiterals(literals[0], literals.length);
   }
 
-  var sequencesSection = sequenceCodec.encodeSequences(found.sequences);
-  if (sequencesSection === null) return null;
+  var huff = huffman.compressLiterals(literals);
+  if (huff !== null) {
+    var content = Buffer.concat([huff.tree, huff.streams]);
+    var section = literalsCodec.writeCompressedLiterals(content, literals.length, huff.streamCount);
+    // Only worth it if it actually beats storing them.
+    if (section !== null && section.length < literals.length + 3) return section;
+  }
 
-  return Buffer.concat([literalsSection, sequencesSection]);
+  return literalsCodec.writeRawLiterals(literals);
 }
 
 exports.encodeBlock = encodeBlock;
+exports.encodeLiterals = encodeLiterals;
 exports.isRun = isRun;

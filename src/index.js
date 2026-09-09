@@ -2,6 +2,8 @@
 
 // Zstandard compression in pure JavaScript.
 
+var fzstd = require('fzstd');
+
 var c = require('./constants');
 var frame = require('./frame');
 var block = require('./block');
@@ -54,5 +56,22 @@ function compress(input, options) {
   return Buffer.concat(parts);
 }
 
+/**
+ * Decompress a Zstandard frame.
+ *
+ * Decoding is delegated to fzstd, which is a well-tested pure-JavaScript
+ * Zstandard decoder. This package exists for the encoder, which had no pure-JS
+ * implementation; there was no reason to write a second decoder.
+ *
+ * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
+ * @returns {Buffer}
+ */
+function decompress(input) {
+  var src = toBytes(input);
+  var out = fzstd.decompress(new Uint8Array(src.buffer, src.byteOffset, src.byteLength));
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
+}
+
 exports.compress = compress;
+exports.decompress = decompress;
 exports.constants = c;

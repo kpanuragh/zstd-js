@@ -1,6 +1,6 @@
 {
   "name": "zstd-js",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Zstandard compression in pure JavaScript. No WebAssembly, no native bindings - runs anywhere JavaScript does, including React Native and Hermes.",
   "main": "src/index.js",
   "types": "index.d.ts",
@@ -27,5 +27,16 @@
   "license": "MIT",
   "engines": {
     "node": ">=18"
-  }
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kpanuragh/zstd-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kpanuragh/zstd-js/issues"
+  },
+  "homepage": "https://github.com/kpanuragh/zstd-js#readme"
 }

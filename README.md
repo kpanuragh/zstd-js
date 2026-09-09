@@ -2,7 +2,34 @@
 
 Zstandard compression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
-> **Status: working, not yet published.** The encoder is complete enough to be useful: LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Output lands within a few percent of real zstd on most inputs and beats gzip comfortably. Every frame is verified against libzstd. Not published to npm.
+> **Status: 0.1.0.** Compression and decompression both work. The encoder does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets; output lands within a few percent of real zstd on most inputs and beats gzip comfortably. Every frame is verified against libzstd.
+
+## Install
+
+```bash
+npm install zstd-js
+```
+
+## Usage
+
+```js
+const zstd = require('zstd-js');
+
+const frame = zstd.compress('hello world');
+const back = zstd.decompress(frame);   // <Buffer 68 65 6c 6c 6f ...>
+```
+
+`compress` accepts a string, `Buffer`, `TypedArray`, `DataView` or
+`ArrayBuffer`, and returns a `Buffer` holding a standard `.zst` frame. Any
+Zstandard decoder reads it — the `zstd` CLI, Node's built-in
+`zlib.zstdDecompressSync`, `fzstd`, or this package's own `decompress`.
+
+```js
+// Tune the match finder
+zstd.compress(data, { searchDepth: 64, windowSize: 1 << 20 });
+```
+
+TypeScript definitions ship with the package.
 
 ## Why
 
@@ -11,7 +38,9 @@ Every Zstandard implementation for JavaScript is either a native binding or a We
 - **React Native.** Hermes has no WebAssembly, so none of the WASM packages run there.
 - **Synchronous APIs.** WASM modules need asynchronous initialisation, which cannot back a `compressSync`.
 
-Decoding is already solved in pure JS by [`fzstd`](https://github.com/101arrowz/fzstd). Encoding is not — there is no pure-JavaScript Zstandard compressor on npm. That is what this is.
+Decoding was already solved in pure JS by [`fzstd`](https://github.com/101arrowz/fzstd). Encoding was not — there is no other pure-JavaScript Zstandard compressor on npm. That is what this package adds.
+
+`decompress` delegates to `fzstd` rather than reimplementing a decoder. It is well tested and MIT licensed, and writing a second one would not have helped anybody.
 
 ## Current behaviour
 
@@ -72,7 +101,20 @@ The bitstream is the part most likely to be subtly wrong, so it is fuzzed: 5,000
 npm test
 ```
 
-Every frame produced is round-tripped through Node's native Zstandard, which is libzstd itself, so correctness is measured against the reference implementation rather than against this package's own decoder.
+Every frame produced is round-tripped through Node's native Zstandard, which is
+libzstd itself, so correctness is measured against the reference implementation
+rather than against this package's own decoder. The suite covers every input
+length from 0 to 200, the 128 KB block boundaries, text, JSON, CSV, source,
+incompressible and mixed content, and randomised payloads over restricted
+alphabets.
+
+## Limitations
+
+- No streaming API yet; `compress` and `decompress` are one-shot.
+- No dictionary support.
+- The optional content checksum is not written. Frames are valid without it.
+- JSON-like input compresses about 2x worse than real zstd, because the parser
+  finds shorter matches there. Optimal parsing is the fix and is not done.
 
 ## License
 

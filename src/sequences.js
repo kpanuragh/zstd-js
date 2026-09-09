@@ -5,6 +5,7 @@
 var c = require('./constants');
 var fse = require('./fse');
 var BitWriter = require('./bitstream').BitWriter;
+var repcodes = require('./repcodes');
 
 // Predefined tables, built once. Symbol maxima follow the distributions.
 var LL_TABLE = fse.buildCTable(c.LL_DEFAULT_DISTRIBUTION, c.LL_DEFAULT_ACCURACY, c.LL_SYMBOL_MAX);
@@ -45,39 +46,6 @@ function writeSequenceCount(count) {
 }
 
 /**
- * Resolve an actual offset against the repeat-offset history.
- *
- * Section 3.1.1.5: Offset_Values 1-3 name recently used offsets instead of
- * spelling one out, which is far cheaper. When a sequence has no literals the
- * three slots shift, and code 3 then means "most recent offset minus one".
- *
- * @returns {{offBase: number, reps: number[]}} offBase is 1-3 for a repeat,
- *   or offset + 3 for a literal offset.
- */
-function resolveOffset(offset, literalLength, reps) {
-  var ll0 = literalLength === 0 ? 1 : 0;
-
-  for (var code = 1; code <= 3; code++) {
-    var index = code - 1 + ll0;
-    var candidate = index === 3 ? reps[0] - 1 : reps[index];
-    if (candidate === offset && candidate > 0) {
-      return { offBase: code, reps: updateReps(reps, code, ll0) };
-    }
-  }
-
-  return { offBase: offset + 3, reps: [offset, reps[0], reps[1]] };
-}
-
-// Mirror of the decoder's history update for a repeat code.
-function updateReps(reps, code, ll0) {
-  var index = code - 1 + ll0;
-  if (index === 0) return reps.slice();
-
-  var current = index === 3 ? reps[0] - 1 : reps[index];
-  return [current, reps[0], index >= 2 ? reps[1] : reps[2]];
-}
-
-/**
  * Encode sequences using the predefined FSE distributions.
  *
  * @param {Array} sequences
@@ -86,7 +54,7 @@ function updateReps(reps, code, ll0) {
  *   cannot be represented with the predefined tables.
  */
 function encodeSequences(sequences, reps) {
-  reps = reps || c.REPEAT_OFFSETS.slice();
+  reps = reps || repcodes.INITIAL.slice();
 
   if (sequences.length === 0) {
     return { section: Buffer.from([0]), reps: reps };
@@ -106,7 +74,7 @@ function encodeSequences(sequences, reps) {
 
     if (s.literalLength > 131071 || s.matchLength > 131074) return null;
 
-    var resolved = resolveOffset(s.offset, s.literalLength, history);
+    var resolved = repcodes.resolve(s.offset, s.literalLength, history);
     history = resolved.reps;
 
     offBases[i] = resolved.offBase;
@@ -165,7 +133,7 @@ function writeExtras(writer, seq, offBase, llCode, mlCode, ofCode) {
 }
 
 exports.encodeSequences = encodeSequences;
-exports.resolveOffset = resolveOffset;
+exports.resolveOffset = repcodes.resolve;
 exports.literalLengthCode = literalLengthCode;
 exports.matchLengthCode = matchLengthCode;
 exports.offsetCode = offsetCode;

@@ -8,6 +8,7 @@ var c = require('./constants');
 var frame = require('./frame');
 var block = require('./block');
 var xxhash = require('./xxhash64');
+var matchFinder = require('./match');
 var stream = require('./stream');
 
 function toBytes(input) {
@@ -30,7 +31,14 @@ function compress(input, options) {
   var src = toBytes(input);
   var checksum = options.checksum === true;
 
-  var parts = [frame.writeFrameHeader(src.length, { checksum: checksum })];
+  // A raw-content dictionary is simply data that precedes the frame: matches
+  // may reach into it, and the decoder must be given the same bytes.
+  var dictionary = options.dictionary ? toBytes(options.dictionary) : null;
+
+  var parts = [frame.writeFrameHeader(src.length, {
+    checksum: checksum,
+    minimumWindow: dictionary ? dictionary.length + src.length : 0
+  })];
 
   if (src.length === 0) {
     parts.push(frame.writeBlockHeader(0, c.BLOCK_RAW, true));
@@ -41,11 +49,27 @@ function compress(input, options) {
   // Repeat-offset history persists across Compressed_Blocks within a frame.
   var reps = c.REPEAT_OFFSETS.slice();
 
+  // One index over the whole input, so a block can match into earlier ones.
+  // With a dictionary the index also covers the dictionary bytes, which sit
+  // immediately before the content.
+  var indexed = dictionary ? Buffer.concat([dictionary, src]) : src;
+  var base = dictionary ? dictionary.length : 0;
+
+  var finderOptions = options;
+  if (dictionary) {
+    finderOptions = Object.assign({}, options, {
+      windowSize: Math.max(options.windowSize || 0, indexed.length)
+    });
+  }
+  var finder = new matchFinder.MatchFinder(indexed, finderOptions);
+  finder.prime(base);
+
   var offset = 0;
   while (offset < src.length) {
     var size = Math.min(c.BLOCK_SIZE_MAX, src.length - offset);
     var last = offset + size >= src.length;
-    var encoded = block.encodeBlock(src.subarray(offset, offset + size), reps, options);
+    var encoded = block.encodeBlock(src.subarray(offset, offset + size), reps, options,
+      finder, base + offset, base + offset + size);
     reps = encoded.reps;
 
     // Block_Size counts the stored content. For RLE that is the repeat count,
@@ -77,13 +101,51 @@ function contentChecksum(src) {
  * Zstandard decoder. This package exists for the encoder, which had no pure-JS
  * implementation; there was no reason to write a second decoder.
  *
+ * When the frame carries a content checksum, it is verified here. fzstd does
+ * not check it, and an unverified decode can return plausible-looking wrong
+ * bytes rather than failing.
+ *
  * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
+ * @param {{dictionary?: unknown}} [options]
  * @returns {Buffer}
  */
-function decompress(input) {
+function decompress(input, options) {
+  if (options && options.dictionary) {
+    throw new Error(
+      'decompress does not support dictionaries. Frames compressed with one ' +
+      'can be read by libzstd or the zstd CLI (zstd -d -D <dict>), but this ' +
+      'package can only produce them, not read them back.');
+  }
+
   var src = toBytes(input);
   var out = fzstd.decompress(new Uint8Array(src.buffer, src.byteOffset, src.byteLength));
-  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
+  var result = Buffer.from(out.buffer, out.byteOffset, out.byteLength);
+
+  verifyChecksum(src, result);
+  return result;
+}
+
+/**
+ * Check the frame's Content_Checksum when it has one.
+ *
+ * Only a single, non-skippable frame is inspected; anything else is left
+ * alone rather than guessed at.
+ */
+function verifyChecksum(frameBytes, decoded) {
+  if (frameBytes.length < 9) return;
+  if (frameBytes.readUInt32LE(0) !== c.MAGIC) return;
+
+  // Section 3.1.1.1.1: bit 2 of Frame_Header_Descriptor.
+  var descriptor = frameBytes[4];
+  if ((descriptor & 0x04) === 0) return;
+
+  var stored = frameBytes.readUInt32LE(frameBytes.length - 4);
+  var actual = xxhash.checksum32(decoded);
+
+  if (stored !== actual) {
+    throw new Error('content checksum mismatch: the frame decoded to different ' +
+      'bytes than were compressed (a dictionary may be required)');
+  }
 }
 
 exports.compress = compress;

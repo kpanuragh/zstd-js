@@ -20,6 +20,16 @@ export interface CompressOptions {
    * Farthest back a match may reference, in bytes. Default 4 MiB.
    */
   windowSize?: number;
+
+  /**
+   * Raw-content dictionary. Matches may reach into it, which helps a great
+   * deal on small payloads that share structure.
+   *
+   * Note that the resulting frame can only be read by a decoder given the
+   * same dictionary — libzstd, or `zstd -d -D <dict>`. This package's own
+   * `decompress` cannot read them.
+   */
+  dictionary?: InputType;
 }
 
 /**
@@ -31,12 +41,24 @@ export interface CompressOptions {
  */
 export function compress(input: InputType, options?: CompressOptions): Buffer;
 
+export interface DecompressOptions {
+  /**
+   * Not supported. Passing a dictionary throws, rather than silently
+   * returning wrong bytes.
+   */
+  dictionary?: never;
+}
+
 /**
  * Decompress a Zstandard frame.
  *
- * @throws if the input is not a valid Zstandard frame.
+ * When the frame carries a content checksum it is verified, so a bad decode
+ * fails instead of returning plausible-looking wrong bytes.
+ *
+ * @throws if the input is not a valid Zstandard frame, if the checksum does
+ *   not match, or if a dictionary is passed.
  */
-export function decompress(input: InputType): Buffer;
+export function decompress(input: InputType, options?: DecompressOptions): Buffer;
 
 /**
  * Streaming compressor. Blocks are emitted as input accumulates, so neither

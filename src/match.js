@@ -29,28 +29,67 @@ function hash4(src, at) {
   return (Math.imul(v, 2654435761) >>> (32 - HASH_LOG));
 }
 
+/**
+ * Searches one buffer, keeping its index between calls so a later block can
+ * match against data in an earlier one.
+ */
+function MatchFinder(src, options) {
+  options = options || {};
+  this.src = src;
+  this.searchDepth = options.searchDepth || 32;
+  this.windowSize = options.windowSize || (1 << 22);
+  this.head = new Int32Array(HASH_SIZE).fill(-1);
+  this.chain = new Int32Array(src.length).fill(-1);
+}
+
+/**
+ * Find sequences covering src[start, end).
+ *
+ * Matches may reach back before `start`, into blocks already emitted, which
+ * is what makes a large input compress as one stream rather than as a series
+ * of independent blocks.
+ */
+/**
+ * Index everything before `upTo` without emitting sequences for it, so those
+ * bytes are reachable as match sources. Used for dictionary content.
+ */
+MatchFinder.prototype.prime = function (upTo) {
+  var limit = Math.min(upTo, this.src.length - MIN_MATCH - 1);
+  for (var i = 0; i < limit; i++) {
+    var h = hash4(this.src, i);
+    this.chain[i] = this.head[h];
+    this.head[h] = i;
+  }
+  return this;
+};
+
+MatchFinder.prototype.run = function (start, end, reps) {
+  return search(this.src, start, end, this.head, this.chain,
+    this.searchDepth, this.windowSize, (reps || repcodes.INITIAL).slice());
+};
+
+/** Convenience wrapper for compressing a standalone buffer. */
 function findSequences(src, options) {
   options = options || {};
-  var searchDepth = options.searchDepth || 32;
-  var windowSize = options.windowSize || (1 << 22);
-  var reps = (options.reps || repcodes.INITIAL).slice();
+  var finder = new MatchFinder(src, options);
+  return finder.run(0, src.length, options.reps);
+}
 
-  var head = new Int32Array(HASH_SIZE).fill(-1);
-  var chain = new Int32Array(src.length).fill(-1);
-
+function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
   var sequences = [];
-  var literals = Buffer.alloc(src.length);
+  var literals = Buffer.alloc(end - start);
   var literalCount = 0;
 
-  var anchor = 0;
-  var pos = 0;
-  var limit = src.length - MIN_MATCH - 1;
+  var anchor = start;
+  var pos = start;
+  var limit = end - MIN_MATCH - 1;
 
   // Longest match reachable from `at`, considering repeat offsets and the
   // hash chain. Returns length 0 when nothing usable is found.
   function bestMatchAt(at, literalLength) {
     var ll0 = literalLength === 0 ? 1 : 0;
-    var max = src.length - at;
+    // A match may run to the end of the block being emitted, no further.
+    var max = end - at;
 
     var repLength = 0;
     var repOffset = 0;
@@ -142,9 +181,9 @@ function findSequences(src, options) {
   }
 
   // Anything after the final match is trailing literals with no sequence.
-  var tail = src.length - anchor;
+  var tail = end - anchor;
   if (tail > 0) {
-    src.copy(literals, literalCount, anchor, src.length);
+    src.copy(literals, literalCount, anchor, end);
     literalCount += tail;
   }
 
@@ -156,4 +195,5 @@ function findSequences(src, options) {
 }
 
 exports.findSequences = findSequences;
+exports.MatchFinder = MatchFinder;
 exports.hash4 = hash4;

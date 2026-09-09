@@ -20,7 +20,14 @@ function isRun(src, start, end) {
  * Encode one block's worth of input.
  * @returns {{type: number, content: Buffer, regeneratedSize: number}}
  */
-function encodeBlock(src, reps, options) {
+/**
+ * Encode one block.
+ *
+ * `finder` is optional. When supplied, its index spans the whole input and
+ * `start`/`end` locate this block within it, so matches can reach into
+ * earlier blocks. Without one, the block is searched on its own.
+ */
+function encodeBlock(src, reps, options, finder, start, end) {
   var size = src.length;
 
   if (size > 1 && isRun(src, 0, size)) {
@@ -28,7 +35,7 @@ function encodeBlock(src, reps, options) {
     return { type: c.BLOCK_RLE, content: Buffer.from([src[0]]), regeneratedSize: size, reps: reps };
   }
 
-  var compressed = tryCompressed(src, reps, options);
+  var compressed = tryCompressed(src, reps, options, finder, start, end);
   if (compressed !== null && compressed.content.length < size) {
     return {
       type: c.BLOCK_COMPRESSED,
@@ -43,10 +50,12 @@ function encodeBlock(src, reps, options) {
 
 // Build a Compressed_Block: a literals section followed by a sequences
 // section. Returns null when the block cannot be represented this way.
-function tryCompressed(src, reps, options) {
+function tryCompressed(src, reps, options, finder, start, end) {
   if (src.length < c.MIN_MATCH + 1) return null;
 
-  var found = matchFinder.findSequences(src, options);
+  var found = finder
+    ? finder.run(start, end, reps)
+    : matchFinder.findSequences(src, options);
   if (found.sequences.length === 0) return null;
 
   var literalsSection = encodeLiterals(found.literals);

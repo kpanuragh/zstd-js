@@ -33,6 +33,22 @@ zstd.compress(data, {
 });
 ```
 
+### Dictionaries
+
+A dictionary is any buffer of representative data. Matches may reach into it,
+which helps a lot on small payloads that share structure:
+
+```js
+const dict = Buffer.from(fs.readFileSync('samples.bin'));
+const frame = zstd.compress(payload, { dictionary: dict });
+```
+
+The frame can then only be read by a decoder holding the same dictionary —
+libzstd, or `zstd -d -D samples.bin`. **This package's own `decompress`
+cannot read dictionary frames**, and passing one throws rather than returning
+wrong bytes. Adding `checksum: true` makes an accidental dictionary-less
+decode fail loudly.
+
 ### Streaming
 
 Neither the whole input nor the whole output has to be in memory:
@@ -81,9 +97,9 @@ Measured against Node's native Zstandard (libzstd) and gzip:
 | HTML | 122,500 | **69** | 71 | 442 | 0.97x | 0.16x |
 | Source code | 6,971 | 2,523 | 2,537 | 2,457 | 0.99x | 1.03x |
 | RFC plain text | 112,425 | 28,243 | 27,002 | 25,804 | 1.05x | 1.09x |
-| CSV | 184,579 | 34,303 | 30,260 | 41,935 | 1.13x | 0.82x |
+| CSV | 184,579 | 34,096 | 30,260 | 41,935 | 1.13x | 0.81x |
 | Lorem ipsum | 46,080 | 93 | 75 | 253 | 1.24x | 0.37x |
-| JSON | 182,281 | 9,174 | 4,769 | 16,088 | 1.92x | 0.57x |
+| JSON | 182,281 | 8,609 | 4,769 | 16,088 | 1.81x | 0.54x |
 | Incompressible | 100,000 | 100,012 | 100,012 | 100,053 | 1.00x | 1.00x |
 
 Throughput ranges from about 7 MB/s on dense input to over 100 MB/s on
@@ -108,8 +124,10 @@ left to improve: zstd finds longer matches there than this parser does.
 - [x] Lazy matching
 - [x] xxhash64 content checksum, one-shot and incremental
 - [x] Streaming API for both directions
-- [ ] Dictionary support
-- [ ] Cross-block matching
+- [x] Dictionary support for compression
+- [x] Cross-block matching
+- [ ] Reading dictionary frames
+- [ ] Optimal parsing
 
 ## Design notes
 
@@ -132,10 +150,12 @@ alphabets.
 
 ## Limitations
 
-- No dictionary support.
-- Matches do not cross block boundaries, so input above 128 KB compresses a
-  little worse than it could.
-- JSON-like input compresses about 1.9x worse than real zstd. The match finder
+- **Dictionaries are write-only here.** `compress` can use one; `decompress`
+  cannot, because the underlying decoder has no dictionary support. Frames
+  made with a dictionary need libzstd or the `zstd` CLI to read.
+- Streaming compression matches within each block only. One-shot `compress`
+  indexes the whole input, so it compresses large files better.
+- JSON-like input compresses about 1.8x worse than real zstd. The match finder
   already finds the longest matches available — raising `searchDepth` changes
   nothing — so the remaining gap is in how sequences are priced, not in
   parsing.

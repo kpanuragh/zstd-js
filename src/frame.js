@@ -24,15 +24,23 @@ function writeFrameHeader(contentSize, options) {
   var checksum = options.checksum ? 1 : 0;
   var known = contentSize !== null && contentSize !== undefined;
 
-  var singleSegment = known && contentSize <= SINGLE_SEGMENT_LIMIT;
+  // A dictionary sits behind the frame content, so the window has to span
+  // both and a single segment will not do.
+  var minimumWindow = options.minimumWindow || 0;
+
+  var singleSegment = known && contentSize <= SINGLE_SEGMENT_LIMIT &&
+    minimumWindow <= contentSize;
 
   // Section 3.1.1.1.1: Frame_Content_Size_flag selects the field width. A
   // flag of 0 means one byte when Single_Segment_flag is set, and no field
   // otherwise.
+  // The 2-byte field stores contentSize - 256, so it cannot express anything
+  // smaller than 256. A single segment can use the 1-byte field instead;
+  // without one, small sizes fall through to the 4-byte field.
   var fcsFlag;
   if (!known) fcsFlag = 0;
   else if (singleSegment && contentSize < 256) fcsFlag = 0;
-  else if (contentSize < 65536 + 256) fcsFlag = 1;
+  else if (contentSize >= 256 && contentSize < 65536 + 256) fcsFlag = 1;
   else if (contentSize < 0x100000000) fcsFlag = 2;
   else fcsFlag = 3;
 
@@ -48,7 +56,8 @@ function writeFrameHeader(contentSize, options) {
 
   if (!singleSegment) {
     // Section 3.1.1.1.2: Window_Size = base + (base / 8) * mantissa.
-    var log = known ? windowLogFor(contentSize) : 23;
+    var span = Math.max(known ? contentSize : 0, minimumWindow);
+    var log = span > 0 ? windowLogFor(span) : 23;
     rest[p++] = ((log - 10) << 3);
   }
 

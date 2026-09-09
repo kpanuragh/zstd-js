@@ -17,14 +17,14 @@ function assertRoundTrips(input, label) {
     ' bytes, expected ' + input.length);
 }
 
-test('lengths 0 to 80, single repeated byte', function () {
-  for (var n = 0; n <= 80; n++) {
+test('lengths 0 to 200, single repeated byte', function () {
+  for (var n = 0; n <= 200; n++) {
     assertRoundTrips(Buffer.alloc(n, 0x61), 'length ' + n);
   }
 });
 
-test('lengths 0 to 80, varied bytes', function () {
-  for (var n = 0; n <= 80; n++) {
+test('lengths 0 to 200, varied bytes', function () {
+  for (var n = 0; n <= 200; n++) {
     var buf = Buffer.alloc(n);
     for (var i = 0; i < n; i++) buf[i] = 97 + (i % 26);
     assertRoundTrips(buf, 'length ' + n);
@@ -46,6 +46,12 @@ test('realistic payloads', function () {
     Array.from({ length: 2000 }, function (_, i) { return { id: i, name: 'item' + i, active: i % 2 === 0 }; })
   )), 'json');
   assertRoundTrips(Buffer.from('function f(x) { return x * 2; }\n'.repeat(2000)), 'source');
+
+  var csv = [];
+  for (var row = 0; row < 5000; row++) {
+    csv.push(row + ',name' + row + ',2024-01-' + ((row % 28) + 1) + ',active,' + (row * 7));
+  }
+  assertRoundTrips(Buffer.from(csv.join('\n')), 'csv');
 });
 
 test('incompressible data falls back without corrupting', function () {

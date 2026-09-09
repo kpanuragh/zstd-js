@@ -31,7 +31,7 @@ test('decodes libzstd frames at every compression level', function () {
 });
 
 test('decodes libzstd frames of every small length', function () {
-  for (var n = 0; n <= 120; n++) {
+  for (var n = 0; n <= 200; n++) {
     var run = Buffer.alloc(n, 0x61);
     assert.ok(zstd.decompress(nodeZlib.zstdCompressSync(run)).equals(run), 'run ' + n);
 

@@ -1,6 +1,6 @@
 # zstd-js
 
-Zstandard compression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
+Zstandard compression and decompression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
 > A complete Zstandard codec with **no dependencies**. Compression does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Decompression reads frames from any encoder, including features this one never emits. Both directions stream, and both support dictionaries. Every frame is verified against libzstd.
 
@@ -25,12 +25,14 @@ Zstandard decoder reads it — the `zstd` CLI, Node's built-in
 `zlib.zstdDecompressSync`, `fzstd`, or this package's own `decompress`.
 
 ```js
-// Options
 zstd.compress(data, {
-  checksum: true,       // append the XXH64 content checksum (4 bytes)
-  searchDepth: 64,      // match finder effort, default 32
-  windowSize: 1 << 20   // farthest a match may reach back, default 4 MiB
+  checksum: true,        // append the XXH64 content checksum (4 bytes)
+  searchDepth: 64,       // match finder effort, default 32
+  windowSize: 1 << 20,   // farthest a match may reach back, default 4 MiB
+  dictionary: dict       // see below
 });
+
+zstd.decompress(frame, { dictionary: dict });
 ```
 
 ### Dictionaries
@@ -39,11 +41,9 @@ A dictionary is any buffer of representative data. Matches may reach into it,
 which helps a lot on small payloads that share structure:
 
 ```js
-const dict = Buffer.from(fs.readFileSync('samples.bin'));
-const frame = zstd.compress(payload, { dictionary: dict });
-```
+const dict = require('fs').readFileSync('samples.bin');
 
-```js
+const frame = zstd.compress(payload, { dictionary: dict });
 const back = zstd.decompress(frame, { dictionary: dict });
 ```
 
@@ -69,6 +69,11 @@ const decoder = new Decompress((chunk, final) => out.push(chunk));
 decoder.push(frameBytes, true);
 ```
 
+Both take the same options as their one-shot counterparts. `Compress` also
+accepts `streamHistory`, the number of already-emitted bytes kept available
+for later blocks to match against; it defaults to one block, 128 KB, and
+setting it to `0` matches each block on its own.
+
 TypeScript definitions ship with the package.
 
 ## Why
@@ -82,14 +87,7 @@ Decoding was already solved in pure JS by [`fzstd`](https://github.com/101arrowz
 
 Decoding started out delegated to `fzstd`, but dictionary support needed a decoder that could be seeded with dictionary content, so it is now implemented here. The package has no dependencies.
 
-## Current behaviour
-
-```js
-const zstd = require('zstd-js');
-
-const frame = zstd.compress('hello world');
-// -> a valid .zst frame, readable by any Zstandard decoder
-```
+## Benchmarks
 
 ### Compression
 
@@ -104,7 +102,7 @@ Measured against Node's native Zstandard (libzstd) and gzip:
 | JSON | 907,781 | 51,491 | 27,310 | 102,228 | 1.89x |
 | Incompressible | 900,000 | 900,031 | 900,030 | 900,293 | 1.00x |
 
-Compression runs at roughly 15-22 MB/s on ordinary data, and around 110 MB/s
+Compression runs at roughly 14-22 MB/s on ordinary data, and around 110 MB/s
 on data it recognises as incompressible, which it detects and passes through
 rather than searching.
 
@@ -125,9 +123,6 @@ Zstandard decoder, decoding frames produced by libzstd:
 Faster on four of six, and substantially so where matches dominate. The two
 it trails are literal-heavy, where the Huffman loop does most of the work.
 
-JSON is the weakest compression case and the main thing left to improve: zstd
-finds shorter, better-priced sequences there than this parser does.
-
 ## Roadmap
 
 - [x] Frame header: single-segment and explicit `Window_Descriptor` paths
@@ -146,8 +141,11 @@ finds shorter, better-priced sequences there than this parser does.
 - [x] Dictionary support, both directions
 - [x] Cross-block matching, one-shot and streaming
 - [x] Decoder, replacing the last dependency
+- [x] Word-at-a-time bit extraction and an inlined Huffman loop
+- [x] Incompressible input detected and passed through
 - [ ] Multi-frame and skippable-frame decoding
 - [ ] Formal dictionary format
+- [ ] Better sequence pricing, to close the gap on JSON
 
 ## Design notes
 
@@ -165,12 +163,13 @@ Every frame produced is round-tripped through Node's native Zstandard, which is
 libzstd itself, so correctness is measured against the reference implementation
 rather than against this package's own decoder. The suite covers every input
 length from 0 to 200, the 128 KB block boundaries, text, JSON, CSV, source,
-incompressible and mixed content, and randomised payloads over restricted
-alphabets.
+incompressible and mixed content, randomised payloads over restricted
+alphabets, and frames produced by libzstd at every compression level from 1
+to 22.
 
 ## Limitations
 
-- JSON-like input compresses about 1.8x worse than real zstd. The match finder
+- JSON-like input compresses about 1.9x larger than real zstd. The match finder
   already finds the longest matches available — raising `searchDepth` changes
   nothing — so the remaining gap is in how sequences are priced, not in
   parsing.

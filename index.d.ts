@@ -5,6 +5,13 @@ export type InputType = string | Buffer | Uint8Array | DataView | ArrayBuffer;
 
 export interface CompressOptions {
   /**
+   * Streaming only: how many already-emitted bytes stay available for later
+   * blocks to match against. Defaults to one block, 128 KiB. Zero matches
+   * each block on its own.
+   */
+  streamHistory?: number;
+
+  /**
    * Append the frame's XXH64 content checksum, so decoders can detect
    * corruption. Costs 4 bytes. Default false.
    */

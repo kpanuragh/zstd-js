@@ -2,7 +2,7 @@
 
 Zstandard compression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
-> **Status: in development.** LZ77 matching and FSE-coded sequences are working, so this genuinely compresses. Every frame is verified against libzstd. Literals are still stored uncompressed — Huffman coding is next — so ratios trail real zstd on data with diverse literals. Not published to npm.
+> **Status: working, not yet published.** The encoder is complete enough to be useful: LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Output lands within a few percent of real zstd on most inputs and beats gzip comfortably. Every frame is verified against libzstd. Not published to npm.
 
 ## Why
 
@@ -22,17 +22,25 @@ const frame = zstd.compress('hello world');
 // -> a valid .zst frame, readable by any Zstandard decoder
 ```
 
-Measured against Node's native Zstandard and gzip:
+Measured against Node's native Zstandard (libzstd) and gzip:
 
-| Input | Original | zstd-js | zstd | gzip |
-|---|---|---|---|---|
-| English text | 45,000 | **64** | 66 | 213 |
-| Source-like text | 92,500 | **94** | 89 | 422 |
-| DNA-like, 4 symbols | 100,000 | **13** | 22 | 132 |
-| JSON | 182,281 | 25,778 | 4,769 | 16,088 |
-| Incompressible | 100,000 | 100,012 | 100,012 | 100,043 |
+| Input | Original | zstd-js | zstd | gzip | vs zstd | vs gzip |
+|---|---|---|---|---|---|---|
+| English text | 45,000 | **64** | 66 | 213 | 0.97x | 0.30x |
+| HTML | 122,500 | **69** | 71 | 442 | 0.97x | 0.16x |
+| Source code | 6,971 | 2,541 | 2,536 | 2,457 | 1.00x | 1.03x |
+| RFC plain text | 112,425 | 28,782 | 27,002 | 25,804 | 1.07x | 1.12x |
+| CSV | 184,579 | 35,503 | 30,260 | 41,935 | 1.17x | 0.85x |
+| Lorem ipsum | 46,080 | 93 | 75 | 253 | 1.24x | 0.37x |
+| JSON | 182,281 | 9,552 | 4,769 | 16,088 | 2.00x | 0.59x |
+| Incompressible | 100,000 | 100,012 | 100,012 | 100,053 | 1.00x | 1.00x |
 
-Highly repetitive input already matches or beats real zstd, because long matches dominate and the sequence coder is complete. JSON is where the gap shows: its literals are diverse, and until Huffman coding lands they are stored raw. That is the next piece of work.
+Throughput ranges from about 7 MB/s on dense input to over 100 MB/s on
+highly repetitive input.
+
+Incompressible data comes out byte-for-byte the same size as real zstd, since
+both fall back to raw blocks. JSON is the weakest case and the main thing
+left to improve: zstd finds longer matches there than this parser does.
 
 ## Roadmap
 
@@ -43,8 +51,11 @@ Highly repetitive input already matches or beats real zstd, because long matches
 - [x] LZ77 match finder, hash chains with configurable search depth
 - [x] FSE encoder, predefined tables
 - [x] `Compressed_Block` assembly, with fallback to raw when it would not help
-- [ ] Huffman literal coding
-- [ ] FSE encoder, custom tables
+- [x] Huffman literal coding, with the four-stream layout
+- [x] FSE encoder, custom tables with normalisation and table transmission
+- [x] Repeat offsets
+- [x] Lazy matching
+- [ ] Optimal parsing, to close the remaining gap on JSON-like input
 - [ ] xxhash64 content checksum
 - [ ] Streaming API
 - [ ] Dictionary support

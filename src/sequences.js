@@ -6,6 +6,7 @@ var c = require('./constants');
 var fse = require('./fse');
 var BitWriter = require('./bitstream').BitWriter;
 var repcodes = require('./repcodes');
+var fseTable = require('./fse-table');
 
 // Predefined tables, built once. Symbol maxima follow the distributions.
 var LL_TABLE = fse.buildCTable(c.LL_DEFAULT_DISTRIBUTION, c.LL_DEFAULT_ACCURACY, c.LL_SYMBOL_MAX);
@@ -85,11 +86,17 @@ function encodeSequences(sequences, reps) {
     if (ofCodes[i] > OF_PREDEFINED_MAX) return null;
   }
 
+  // Choose how each symbol type is coded. A custom table costs bytes to
+  // transmit, so it only pays once there are enough sequences to amortise it.
+  var ll = chooseMode(llCodes, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX, LL_TABLE, count);
+  var of = chooseMode(ofCodes, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX, OF_TABLE, count);
+  var ml = chooseMode(mlCodes, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX, ML_TABLE, count);
+
   var writer = new BitWriter(1024);
 
-  var llState = new fse.FseState(LL_TABLE);
-  var mlState = new fse.FseState(ML_TABLE);
-  var ofState = new fse.FseState(OF_TABLE);
+  var llState = new fse.FseState(ll.table);
+  var mlState = new fse.FseState(ml.table);
+  var ofState = new fse.FseState(of.table);
 
   // The decoder reads backward, so encode from the last sequence to the
   // first. States are seeded from the last sequence's symbols.
@@ -114,15 +121,61 @@ function encodeSequences(sequences, reps) {
 
   var bitstream = writer.close();
 
-  // All three symbol types use Predefined_Mode; the low two bits are reserved.
-  var modes = Buffer.from([
-    (c.MODE_PREDEFINED << 6) | (c.MODE_PREDEFINED << 4) | (c.MODE_PREDEFINED << 2)
-  ]);
+  // Section 3.1.1.3.2.1: modes pack as literal lengths, offsets, match
+  // lengths; the low two bits are reserved and must be zero.
+  var modes = Buffer.from([(ll.mode << 6) | (of.mode << 4) | (ml.mode << 2)]);
 
-  return {
-    section: Buffer.concat([writeSequenceCount(count), modes, bitstream]),
-    reps: history
-  };
+  // Tables follow the header in the order literal lengths, offsets, match
+  // lengths.
+  var parts = [writeSequenceCount(count), modes];
+  if (ll.description) parts.push(ll.description);
+  if (of.description) parts.push(of.description);
+  if (ml.description) parts.push(ml.description);
+  parts.push(bitstream);
+
+  return { section: Buffer.concat(parts), reps: history };
+}
+
+// Sequence count below which a transmitted table cannot pay for itself.
+var CUSTOM_TABLE_MIN_SEQUENCES = 24;
+
+/**
+ * Decide between Predefined_Mode, RLE_Mode and FSE_Compressed_Mode for one
+ * symbol type.
+ */
+function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, count) {
+  var counts = new Uint32Array(maxSymbol + 1);
+  var distinct = 0;
+  for (var i = 0; i < codes.length; i++) {
+    if (counts[codes[i]]++ === 0) distinct++;
+  }
+
+  // One symbol throughout: the table is that single value.
+  if (distinct === 1) {
+    var only = codes[0];
+    return {
+      mode: c.MODE_RLE,
+      description: Buffer.from([only]),
+      table: rleTable(only, maxSymbol)
+    };
+  }
+
+  if (count >= CUSTOM_TABLE_MIN_SEQUENCES) {
+    var custom = fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog);
+    if (custom !== null) {
+      return { mode: c.MODE_FSE, description: custom.description, table: custom.table };
+    }
+  }
+
+  return { mode: c.MODE_PREDEFINED, description: null, table: predefinedTable };
+}
+
+// RLE_Mode still needs a table to drive the encoder, even though the stream
+// carries no bits for this symbol type.
+function rleTable(symbol, maxSymbol) {
+  var distribution = new Int16Array(maxSymbol + 1);
+  distribution[symbol] = 1;
+  return fse.buildCTable(distribution, 0, symbol);
 }
 
 // Extra bits carry the offset of a value above its code's baseline.

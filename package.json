@@ -1,0 +1,31 @@
+{
+  "name": "zstd-js",
+  "version": "0.0.0",
+  "description": "Zstandard compression in pure JavaScript. No WebAssembly, no native bindings - runs anywhere JavaScript does, including React Native and Hermes.",
+  "main": "src/index.js",
+  "types": "index.d.ts",
+  "files": [
+    "src/",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "zstd",
+    "zstandard",
+    "compression",
+    "compress",
+    "pure-javascript",
+    "react-native",
+    "hermes",
+    "browser"
+  ],
+  "author": "Anurag KP",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

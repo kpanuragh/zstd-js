@@ -1,14 +1,10 @@
 'use strict';
 
 // Zstandard compression in pure JavaScript.
-//
-// Entropy coding is still being built out; today every block is emitted as a
-// Raw_Block or an RLE_Block, so output is valid zstd that any decoder reads
-// but is not yet smaller than the input. The frame, block and bitstream
-// layers underneath are complete.
 
 var c = require('./constants');
 var frame = require('./frame');
+var block = require('./block');
 
 function toBytes(input) {
   if (typeof input === 'string') return Buffer.from(input, 'utf8');
@@ -18,16 +14,13 @@ function toBytes(input) {
   throw new TypeError('input must be a string, Buffer, TypedArray, DataView or ArrayBuffer');
 }
 
-// True when every byte of the slice is identical, which an RLE_Block can
-// represent in a single byte.
-function isRun(src, start, end) {
-  var first = src[start];
-  for (var i = start + 1; i < end; i++) {
-    if (src[i] !== first) return false;
-  }
-  return true;
-}
-
+/**
+ * Compress input into a Zstandard frame.
+ *
+ * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
+ * @param {{searchDepth?: number, windowSize?: number}} [options]
+ * @returns {Buffer}
+ */
 function compress(input, options) {
   options = options || {};
   var src = toBytes(input);
@@ -43,17 +36,14 @@ function compress(input, options) {
   while (offset < src.length) {
     var size = Math.min(c.BLOCK_SIZE_MAX, src.length - offset);
     var last = offset + size >= src.length;
+    var encoded = block.encodeBlock(src.subarray(offset, offset + size), options);
 
-    if (size > 1 && isRun(src, offset, offset + size)) {
-      // Section 3.1.1.2: an RLE_Block's content is one byte, and Block_Size
-      // is the number of times it repeats.
-      parts.push(frame.writeBlockHeader(size, c.BLOCK_RLE, last));
-      parts.push(Buffer.from([src[offset]]));
-    } else {
-      parts.push(frame.writeBlockHeader(size, c.BLOCK_RAW, last));
-      parts.push(src.subarray(offset, offset + size));
-    }
+    // Block_Size counts the stored content. For RLE that is the repeat count,
+    // which is the regenerated size rather than the one stored byte.
+    var declared = encoded.type === c.BLOCK_RLE ? encoded.regeneratedSize : encoded.content.length;
 
+    parts.push(frame.writeBlockHeader(declared, encoded.type, last));
+    parts.push(encoded.content);
     offset += size;
   }
 

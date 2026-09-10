@@ -10,10 +10,14 @@ var readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 var zstd = require('../src');
 
 function javascriptBlocks(markdown) {
+  // Windows checkouts have CRLF line endings, so the newline after the fence
+  // is matched loosely and the block is normalised before being run.
   var blocks = [];
-  var pattern = /```js\n([\s\S]*?)```/g;
+  var pattern = /```js\r?\n([\s\S]*?)```/g;
   var match;
-  while ((match = pattern.exec(markdown)) !== null) blocks.push(match[1]);
+  while ((match = pattern.exec(markdown)) !== null) {
+    blocks.push(match[1].replace(/\r\n/g, '\n'));
+  }
   return blocks;
 }
 

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The suite checks every frame against Node's own Zstandard, which arrived
+    # in 22.15. Correctness is measured against the reference implementation,
+    # so these are the versions that can run it.
+    name: test on Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.15', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install the zstd CLI
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - run: node --version && zstd --version
+
+      - run: npm test
+
+  smoke:
+    # The package is pure JavaScript, so it must work on runtimes without the
+    # built-in binding, even though the differential suite cannot run there.
+    name: smoke on Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: node scripts/smoke.js
+
+  cross-platform:
+    name: test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The dictionary test needs the zstd CLI and skips itself without one,
+      # so these runners exercise everything else.
+      - run: npm test
+
+  package:
+    name: packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: The published tarball must work on its own
+        run: |
+          npm pack
+          mkdir -p /tmp/consumer
+          cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/zstd-js-*.tgz
+          node -e "
+            const zstd = require('zstd-js');
+            const data = Buffer.from('installed package check '.repeat(2000));
+            const frame = zstd.compress(data, { checksum: true });
+            if (!zstd.decompress(frame).equals(data)) throw new Error('round-trip failed');
+            if (Object.keys(require('zstd-js/package.json').dependencies || {}).length) {
+              throw new Error('this package is meant to have no dependencies');
+            }
+            console.log('tarball works:', data.length, '->', frame.length, 'bytes');
+          "

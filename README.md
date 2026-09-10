@@ -1,5 +1,9 @@
 # zstd-js
 
+[![CI](https://github.com/kpanuragh/zstd-js/actions/workflows/ci.yml/badge.svg)](https://github.com/kpanuragh/zstd-js/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/zstd-js.svg)](https://www.npmjs.com/package/zstd-js)
+[![no dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](https://github.com/kpanuragh/zstd-js/blob/master/package.json)
+
 Zstandard compression and decompression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
 > A complete Zstandard codec with **no dependencies**. Compression does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Decompression reads frames from any encoder, including features this one never emits. Both directions stream, and both support dictionaries. Every frame is verified against libzstd.

@@ -186,6 +186,21 @@ Everything is written against [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.
 
 The bitstream is the part most likely to be subtly wrong, so it is fuzzed: 5,000 randomised field sequences are written and read back per test run.
 
+## Releasing
+
+Releases are automated. Either run the **Release** workflow from the Actions
+tab and pick a bump, or tag locally:
+
+```bash
+npm version patch   # tags 0.6.2, no v prefix
+git push --follow-tags
+```
+
+Pushing the tag runs the suite, publishes to npm with a provenance
+attestation, and opens the GitHub release. Publishing is authenticated by
+OpenID Connect through a trusted publisher on npmjs.com, so no token is
+stored in this repository.
+
 ## Testing
 
 ```bash

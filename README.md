@@ -192,7 +192,7 @@ Releases are automated. Either run the **Release** workflow from the Actions
 tab and pick a bump, or tag locally:
 
 ```bash
-npm version patch   # tags 0.6.2, no v prefix
+npm version patch   # bumps and tags, with no v prefix
 git push --follow-tags
 ```
 

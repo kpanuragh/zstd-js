@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // XXH64, the hash Zstandard uses for the optional Content_Checksum
 // (RFC 8878 Section 3.1.1.1.4). The frame stores the low 32 bits.
 //
@@ -32,8 +34,8 @@ function mergeRound(acc, value) {
 }
 
 function read64(bytes, at) {
-  var low = BigInt(bytes.readUInt32LE(at));
-  var high = BigInt(bytes.readUInt32LE(at + 4));
+  var low = BigInt(bin.readU32(bytes, at));
+  var high = BigInt(bin.readU32(bytes, at + 4));
   return (high << 32n) | low;
 }
 
@@ -82,7 +84,7 @@ function xxhash64(input, seed) {
   }
 
   if (position + 4 <= length) {
-    hash = hash ^ ((BigInt(input.readUInt32LE(position)) * P1) & MASK);
+    hash = hash ^ ((BigInt(bin.readU32(input, position)) * P1) & MASK);
     hash = ((rotl(hash, 23) * P2) + P3) & MASK;
     position += 4;
   }
@@ -121,7 +123,7 @@ function Xxh64Stream(seed) {
   this.v3 = seed;
   this.v4 = (seed - P1) & MASK;
   this.total = 0;
-  this.buffer = Buffer.alloc(32);
+  this.buffer = bin.alloc(32);
   this.buffered = 0;
 }
 
@@ -132,11 +134,11 @@ Xxh64Stream.prototype.update = function (chunk) {
   if (this.buffered > 0) {
     var wanted = 32 - this.buffered;
     if (chunk.length < wanted) {
-      chunk.copy(this.buffer, this.buffered);
+      bin.copy(chunk, this.buffer, this.buffered);
       this.buffered += chunk.length;
       return this;
     }
-    chunk.copy(this.buffer, this.buffered, 0, wanted);
+    bin.copy(chunk, this.buffer, this.buffered, 0, wanted);
     this._stripe(this.buffer, 0);
     this.buffered = 0;
     position = wanted;
@@ -149,7 +151,7 @@ Xxh64Stream.prototype.update = function (chunk) {
 
   var rest = chunk.length - position;
   if (rest > 0) {
-    chunk.copy(this.buffer, 0, position, chunk.length);
+    bin.copy(chunk, this.buffer, 0, position, chunk.length);
     this.buffered = rest;
   }
   return this;
@@ -187,7 +189,7 @@ Xxh64Stream.prototype.digest = function () {
   }
 
   if (position + 4 <= tail.length) {
-    hash = hash ^ ((BigInt(tail.readUInt32LE(position)) * P1) & MASK);
+    hash = hash ^ ((BigInt(bin.readU32(tail, position)) * P1) & MASK);
     hash = ((rotl(hash, 23) * P2) + P3) & MASK;
     position += 4;
   }

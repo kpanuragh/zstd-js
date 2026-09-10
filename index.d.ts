@@ -3,6 +3,13 @@
 /** Anything the compressor accepts as input. */
 export type InputType = string | Buffer | Uint8Array | DataView | ArrayBuffer;
 
+/**
+ * Results are a Node `Buffer` where the runtime has one and a plain
+ * `Uint8Array` otherwise. A `Buffer` is a `Uint8Array`, so code written
+ * against this type works in both.
+ */
+export type Bytes = Uint8Array;
+
 export interface CompressOptions {
   /**
    * Streaming only: how many already-emitted bytes stay available for later
@@ -19,9 +26,27 @@ export interface CompressOptions {
 
   /**
    * How many candidate positions the match finder examines per position.
-   * Higher values compress a little better and run slower. Default 32.
+   * Default 32.
+   *
+   * This and the two below trade time for effort, not reliably for size:
+   * measured across a mixed corpus, raising them costs time without
+   * compressing better, and lowering them is faster but not consistently
+   * larger. There is deliberately no `level` option, because levels imply a
+   * monotone size curve that this parser does not have.
    */
   searchDepth?: number;
+
+  /**
+   * Consecutive candidates that may fail the first-byte check before a
+   * position is written off. Default 16.
+   */
+  maxMisses?: number;
+
+  /**
+   * Match length at which the search stops looking for a longer one.
+   * Default 64.
+   */
+  goodEnough?: number;
 
   /**
    * Farthest back a match may reference, in bytes. Default 4 MiB.

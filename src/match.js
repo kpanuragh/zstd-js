@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // LZ77 match finder.
 //
 // A hash table maps four-byte prefixes to the most recent position holding
@@ -48,6 +50,8 @@ function MatchFinder(src, options) {
   this.src = src;
   this.searchDepth = options.searchDepth || 32;
   this.windowSize = options.windowSize || (1 << 22);
+  this.goodEnough = options.goodEnough || GOOD_ENOUGH;
+  this.maxMisses = options.maxMisses || MAX_MISSES;
   this.head = new Int32Array(HASH_SIZE).fill(-1);
   this.chain = new Int32Array(src.length).fill(-1);
 }
@@ -85,7 +89,8 @@ MatchFinder.prototype.index = function (from, to) {
 
 MatchFinder.prototype.run = function (start, end, reps) {
   return search(this.src, start, end, this.head, this.chain,
-    this.searchDepth, this.windowSize, (reps || repcodes.INITIAL).slice());
+    this.searchDepth, this.windowSize, (reps || repcodes.INITIAL).slice(),
+    this.goodEnough, this.maxMisses);
 };
 
 /** Convenience wrapper for compressing a standalone buffer. */
@@ -123,7 +128,7 @@ function commonPrefix(src, a, b, max) {
  * of them wins, because a repeat code costs a couple of bits where a
  * spelled-out offset costs a dozen or more.
  */
-function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth, windowSize) {
+function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth, windowSize, goodEnough, maxMisses) {
   var ll0 = literalLength === 0 ? 1 : 0;
   var max = end - at;
 
@@ -155,7 +160,7 @@ function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth
 
   // A long repeat is both the cheapest offset and plenty of coverage; there is
   // nothing the hash chain can offer that beats it.
-  if (repLength >= GOOD_ENOUGH) {
+  if (repLength >= goodEnough) {
     foundLength = repLength;
     foundOffset = repOffset;
     return;
@@ -173,14 +178,14 @@ function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth
 
     // Cheap rejection: the byte past the current best must match.
     if (src[candidate + bestLength] !== src[at + bestLength]) {
-      if (++misses >= MAX_MISSES) break;
+      if (++misses >= maxMisses) break;
     } else {
       var length = commonPrefix(src, candidate, at, max);
       if (length > bestLength) {
         bestLength = length;
         bestOffset = offset;
         misses = 0;
-        if (bestLength >= GOOD_ENOUGH) break;
+        if (bestLength >= goodEnough) break;
       }
     }
     candidate = chain[candidate];
@@ -196,9 +201,9 @@ function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth
   foundOffset = bestOffset;
 }
 
-function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
+function search(src, start, end, head, chain, searchDepth, windowSize, reps, goodEnough, maxMisses) {
   var sequences = [];
-  var literals = Buffer.alloc(end - start);
+  var literals = bin.alloc(end - start);
   var literalCount = 0;
 
   var anchor = start;
@@ -206,7 +211,7 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
   var limit = end - MIN_MATCH - 1;
 
   while (pos < limit) {
-    bestMatchAt(src, pos, end, pos - anchor, reps, head, chain, searchDepth, windowSize);
+    bestMatchAt(src, pos, end, pos - anchor, reps, head, chain, searchDepth, windowSize, goodEnough, maxMisses);
 
     if (foundLength < MIN_MATCH) {
       var h = hash4(src, pos);
@@ -221,12 +226,12 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
 
     // Lazy step: would starting one byte later pay for the extra literal?
     // Not worth asking once the match is already long.
-    while (pos + 1 < limit && length < GOOD_ENOUGH) {
+    while (pos + 1 < limit && length < goodEnough) {
       var hh = hash4(src, pos);
       chain[pos] = head[hh];
       head[hh] = pos;
 
-      bestMatchAt(src, pos + 1, end, pos + 1 - anchor, reps, head, chain, searchDepth, windowSize);
+      bestMatchAt(src, pos + 1, end, pos + 1 - anchor, reps, head, chain, searchDepth, windowSize, goodEnough, maxMisses);
       if (foundLength >= length + LAZY_MARGIN) {
         length = foundLength;
         offset = foundOffset;
@@ -237,7 +242,7 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
     }
 
     var literalLength = pos - anchor;
-    src.copy(literals, literalCount, anchor, pos);
+    bin.copy(src, literals, literalCount, anchor, pos);
     literalCount += literalLength;
 
     sequences.push({
@@ -263,7 +268,7 @@ function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
   // Anything after the final match is trailing literals with no sequence.
   var tail = end - anchor;
   if (tail > 0) {
-    src.copy(literals, literalCount, anchor, end);
+    bin.copy(src, literals, literalCount, anchor, end);
     literalCount += tail;
   }
 

@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Zstandard compression in pure JavaScript.
 
 var c = require('./constants');
@@ -12,10 +14,10 @@ var stream = require('./stream');
 var decode = require('./decode');
 
 function toBytes(input) {
-  if (typeof input === 'string') return Buffer.from(input, 'utf8');
-  if (Buffer.isBuffer(input)) return input;
-  if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
-  if (input instanceof ArrayBuffer) return Buffer.from(input);
+  if (typeof input === 'string') return bin.from(input);
+  // A Buffer is a Uint8Array, so this covers both without needing Buffer.
+  if (input instanceof Uint8Array) return input;
+  if (ArrayBuffer.isView(input) || input instanceof ArrayBuffer) return bin.from(input);
   throw new TypeError('input must be a string, Buffer, TypedArray, DataView or ArrayBuffer');
 }
 
@@ -46,7 +48,7 @@ function compress(input, options) {
   if (src.length === 0) {
     parts.push(frame.writeBlockHeader(0, c.BLOCK_RAW, true));
     if (checksum) parts.push(contentChecksum(src));
-    return Buffer.concat(parts);
+    return bin.external(bin.concat(parts));
   }
 
   // Repeat-offset history persists across Compressed_Blocks within a frame,
@@ -56,7 +58,7 @@ function compress(input, options) {
   // One index over the whole input, so a block can match into earlier ones.
   // With a dictionary the index also covers the dictionary bytes, which sit
   // immediately before the content.
-  var indexed = dictionary ? Buffer.concat([dictionary, src]) : src;
+  var indexed = dictionary ? bin.concat([dictionary, src]) : src;
   var base = dictionary ? dictionary.length : 0;
 
   var finderOptions = options;
@@ -89,12 +91,12 @@ function compress(input, options) {
   // XXH64, when the descriptor said one is present.
   if (checksum) parts.push(contentChecksum(src));
 
-  return Buffer.concat(parts);
+  return bin.external(bin.concat(parts));
 }
 
 function contentChecksum(src) {
-  var out = Buffer.alloc(4);
-  out.writeUInt32LE(xxhash.checksum32(src), 0);
+  var out = bin.alloc(4);
+  bin.writeU32(out, xxhash.checksum32(src), 0);
   return out;
 }
 
@@ -110,9 +112,9 @@ function contentChecksum(src) {
  */
 function decompress(input, options) {
   options = options || {};
-  return decode.decodeFrame(toBytes(input), {
+  return bin.external(decode.decodeFrame(toBytes(input), {
     dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
-  });
+  }));
 }
 
 exports.compress = compress;

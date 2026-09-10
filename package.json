@@ -35,5 +35,13 @@
   "bugs": {
     "url": "https://github.com/kpanuragh/zstd-js/issues"
   },
-  "homepage": "https://github.com/kpanuragh/zstd-js#readme"
+  "homepage": "https://github.com/kpanuragh/zstd-js#readme",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false
 }

@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Zstandard bitstreams (RFC 8878 Section 4.1).
 //
 // The compressor writes bits forward; the decompressor reads them backward.
@@ -25,7 +27,7 @@ var MASKS = new Int32Array(26);
 for (var m = 0; m <= 25; m++) MASKS[m] = m === 0 ? 0 : ((1 << m) - 1);
 
 function BitWriter(capacity) {
-  this.buf = Buffer.alloc(capacity || 1024);
+  this.buf = bin.alloc(capacity || 1024);
   this.len = 0;
   this.container = 0;
   this.bits = 0;
@@ -35,8 +37,8 @@ BitWriter.prototype._grow = function (needed) {
   if (this.len + needed <= this.buf.length) return;
   var size = this.buf.length * 2;
   while (size < this.len + needed) size *= 2;
-  var next = Buffer.alloc(size);
-  this.buf.copy(next, 0, 0, this.len);
+  var next = bin.alloc(size);
+  bin.copy(this.buf, next, 0, 0, this.len);
   this.buf = next;
 };
 

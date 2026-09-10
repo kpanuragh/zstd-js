@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Literals_Section encoding (RFC 8878 Section 3.1.1.3.1).
 
 var c = require('./constants');
@@ -14,14 +16,14 @@ function writeRawLiterals(literals) {
 
   if (size <= 31) {
     // Size_Format uses one bit; Regenerated_Size occupies bits 3-7.
-    header = Buffer.from([c.LITERALS_RAW | (0 << 2) | (size << 3)]);
+    header = bin.from([c.LITERALS_RAW | (0 << 2) | (size << 3)]);
   } else if (size <= 4095) {
-    header = Buffer.from([
+    header = bin.from([
       c.LITERALS_RAW | (1 << 2) | ((size & 0x0F) << 4),
       (size >> 4) & 0xFF
     ]);
   } else if (size <= 1048575) {
-    header = Buffer.from([
+    header = bin.from([
       c.LITERALS_RAW | (3 << 2) | ((size & 0x0F) << 4),
       (size >> 4) & 0xFF,
       (size >> 12) & 0xFF
@@ -30,27 +32,27 @@ function writeRawLiterals(literals) {
     throw new Error('literals section too large: ' + size);
   }
 
-  return Buffer.concat([header, literals]);
+  return bin.concat([header, literals]);
 }
 
 /** RLE_Literals_Block: one byte repeated Regenerated_Size times. */
 function writeRleLiterals(byte, size) {
   var header;
   if (size <= 31) {
-    header = Buffer.from([c.LITERALS_RLE | (0 << 2) | (size << 3)]);
+    header = bin.from([c.LITERALS_RLE | (0 << 2) | (size << 3)]);
   } else if (size <= 4095) {
-    header = Buffer.from([
+    header = bin.from([
       c.LITERALS_RLE | (1 << 2) | ((size & 0x0F) << 4),
       (size >> 4) & 0xFF
     ]);
   } else {
-    header = Buffer.from([
+    header = bin.from([
       c.LITERALS_RLE | (3 << 2) | ((size & 0x0F) << 4),
       (size >> 4) & 0xFF,
       (size >> 12) & 0xFF
     ]);
   }
-  return Buffer.concat([header, Buffer.from([byte])]);
+  return bin.concat([header, bin.from([byte])]);
 }
 
 
@@ -86,13 +88,13 @@ function writeCompressedLiterals(content, regeneratedSize, streamCount) {
     regeneratedSize * 16 +
     compressedSize * 16 * Math.pow(2, sizeBits);
 
-  return Buffer.concat([writeLE(value, headerBytes), content]);
+  return bin.concat([writeLE(value, headerBytes), content]);
 }
 
 // Little-endian across an arbitrary byte count, using arithmetic so values
 // wider than 32 bits stay exact.
 function writeLE(value, byteCount) {
-  var out = Buffer.alloc(byteCount);
+  var out = bin.alloc(byteCount);
   for (var i = 0; i < byteCount; i++) {
     out[i] = value % 256;
     value = Math.floor(value / 256);

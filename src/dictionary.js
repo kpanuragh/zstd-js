@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Dictionary parsing (RFC 8878 Section 5).
 //
 // Two kinds exist. A formal dictionary starts with a magic number and carries
@@ -20,11 +22,11 @@ var MAGIC = 0xEC30A437;
  *            tables: {ll: object|null, of: object|null, ml: object|null}}}
  */
 function parse(bytes) {
-  if (bytes.length < 8 || bytes.readUInt32LE(0) !== MAGIC) {
+  if (bytes.length < 8 || bin.readU32(bytes, 0) !== MAGIC) {
     return rawDictionary(bytes);
   }
 
-  var id = bytes.readUInt32LE(4);
+  var id = bin.readU32(bytes, 4);
   var at = 8;
 
   // Order is fixed: literals Huffman table, then offsets, match lengths and
@@ -43,9 +45,9 @@ function parse(bytes) {
   if (bytes.length - at < 12) throw new Error('dictionary ends before its repeat offsets');
 
   var reps = [
-    bytes.readUInt32LE(at),
-    bytes.readUInt32LE(at + 4),
-    bytes.readUInt32LE(at + 8)
+    bin.readU32(bytes, at),
+    bin.readU32(bytes, at + 4),
+    bin.readU32(bytes, at + 8)
   ];
   at += 12;
 
@@ -87,5 +89,5 @@ function rawDictionary(bytes) {
 exports.MAGIC = MAGIC;
 exports.parse = parse;
 exports.isFormal = function (bytes) {
-  return bytes.length >= 8 && bytes.readUInt32LE(0) === MAGIC;
+  return bytes.length >= 8 && bin.readU32(bytes, 0) === MAGIC;
 };

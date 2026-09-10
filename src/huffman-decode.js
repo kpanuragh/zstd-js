@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Huffman decoding for literals (RFC 8878 Section 4.2).
 
 var fse = require('./fse');
@@ -155,8 +157,8 @@ function decodeStream(bytes, table, count, out, outOffset) {
 
   // Pad both sides so a four-byte read is always in bounds; the loop then has
   // no edge cases and stays tight.
-  var stream = Buffer.alloc(bytes.length + PAD * 2);
-  bytes.copy(stream, PAD);
+  var stream = bin.alloc(bytes.length + PAD * 2);
+  bin.copy(bytes, stream, PAD);
 
   var position = reader.pos + PAD * 8;
 

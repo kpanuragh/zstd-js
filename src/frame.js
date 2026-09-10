@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Frame and block framing (RFC 8878 Section 3.1.1).
 
 var c = require('./constants');
@@ -52,12 +54,12 @@ function writeFrameHeader(contentSize, options) {
   else fcsFlag = 3;
 
   var bytes = [];
-  var header = Buffer.alloc(4);
-  header.writeUInt32LE(c.MAGIC, 0);
+  var header = bin.alloc(4);
+  bin.writeU32(header, c.MAGIC, 0);
   bytes.push(header);
 
   var descriptor = (fcsFlag << 6) | (singleSegment ? 0x20 : 0) | (checksum << 2) | dictIdFlag;
-  var rest = Buffer.alloc(14);
+  var rest = bin.alloc(14);
   var p = 0;
   rest[p++] = descriptor;
 
@@ -68,26 +70,26 @@ function writeFrameHeader(contentSize, options) {
     rest[p++] = ((log - 10) << 3);
   }
 
-  if (dictIdFlag === 1) rest.writeUInt8(dictionaryId, p), p += 1;
-  else if (dictIdFlag === 2) rest.writeUInt16LE(dictionaryId, p), p += 2;
-  else if (dictIdFlag === 3) rest.writeUInt32LE(dictionaryId, p), p += 4;
+  if (dictIdFlag === 1) rest[p] = dictionaryId & 0xFF, p += 1;
+  else if (dictIdFlag === 2) bin.writeU16(rest, dictionaryId, p), p += 2;
+  else if (dictIdFlag === 3) bin.writeU32(rest, dictionaryId, p), p += 4;
 
   if (known) {
-    if (fcsFlag === 0 && singleSegment) rest.writeUInt8(contentSize, p), p += 1;
-    else if (fcsFlag === 1) rest.writeUInt16LE(contentSize - 256, p), p += 2;
-    else if (fcsFlag === 2) rest.writeUInt32LE(contentSize, p), p += 4;
-    else if (fcsFlag === 3) rest.writeBigUInt64LE(BigInt(contentSize), p), p += 8;
+    if (fcsFlag === 0 && singleSegment) rest[p] = contentSize & 0xFF, p += 1;
+    else if (fcsFlag === 1) bin.writeU16(rest, contentSize - 256, p), p += 2;
+    else if (fcsFlag === 2) bin.writeU32(rest, contentSize, p), p += 4;
+    else if (fcsFlag === 3) bin.writeU64(rest, contentSize, p), p += 8;
   }
 
   bytes.push(rest.subarray(0, p));
-  return Buffer.concat(bytes);
+  return bin.concat(bytes);
 }
 
 // Section 3.1.1.2: Block_Header is three bytes, little-endian:
 // bit 0 Last_Block, bits 2-1 Block_Type, bits 23-3 Block_Size.
 function writeBlockHeader(size, type, last) {
-  var header = Buffer.alloc(3);
-  header.writeUIntLE((size << 3) | (type << 1) | (last ? 1 : 0), 0, 3);
+  var header = bin.alloc(3);
+  bin.writeU24(header, (size << 3) | (type << 1) | (last ? 1 : 0), 0);
   return header;
 }
 

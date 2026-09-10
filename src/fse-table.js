@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Normalising symbol counts and writing FSE table descriptions
 // (RFC 8878 Section 4.1.1).
 
@@ -147,7 +149,7 @@ function writeTableDescription(normalized, maxSymbol, accuracyLog) {
   }
 
   if (bitCount > 0) bits.push(accumulator & 0xFF);
-  return Buffer.from(bits);
+  return bin.from(bits);
 }
 
 /**

@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Zstandard frame decoding (RFC 8878 Section 3).
 
 var c = require('./constants');
@@ -40,18 +42,26 @@ function extract(bytes, pos, nbBits) {
 
 /** Copy a bitstream with padding on both sides. */
 function padStream(stream) {
-  var padded = Buffer.alloc(stream.length + PAD * 2);
-  stream.copy(padded, PAD);
+  var padded = bin.alloc(stream.length + PAD * 2);
+  bin.copy(stream, padded, PAD);
   return padded;
 }
 
 var DICT_ID_SIZE = [0, 1, 2, 4];
 var FCS_SIZE = [0, 2, 4, 8];
 
-/** Parse a frame header (Section 3.1.1.1). */
+/**
+ * Parse a frame header (Section 3.1.1.1).
+ *
+ * Every field is bounds-checked before it is read. Buffer's accessors threw
+ * on a short read, which the streaming decoder relied on to know it needed
+ * more input; a Uint8Array quietly yields undefined instead, so the check has
+ * to be explicit or a truncated header parses as nonsense.
+ */
 function parseFrameHeader(bytes, offset) {
-  if (bytes.length - offset < 5) throw new Error('truncated frame header');
-  if (bytes.readUInt32LE(offset) !== c.MAGIC) throw new Error('not a Zstandard frame');
+  var available = bytes.length - offset;
+  if (available < 5) throw new Error('truncated frame header');
+  if (bin.readU32(bytes, offset) !== c.MAGIC) throw new Error('not a Zstandard frame');
 
   var at = offset + 4;
   var descriptor = bytes[at++];
@@ -63,6 +73,11 @@ function parseFrameHeader(bytes, offset) {
 
   if ((descriptor >> 3) & 1) throw new Error('reserved bit set in frame header');
 
+  var dictIdSize = DICT_ID_SIZE[dictIdFlag];
+  var fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : FCS_SIZE[fcsFlag];
+  var needed = 4 + 1 + (singleSegment ? 0 : 1) + dictIdSize + fcsSize;
+  if (available < needed) throw new Error('truncated frame header');
+
   var windowSize = 0;
   if (!singleSegment) {
     var windowDescriptor = bytes[at++];
@@ -73,16 +88,14 @@ function parseFrameHeader(bytes, offset) {
   }
 
   var dictionaryId = 0;
-  var dictIdSize = DICT_ID_SIZE[dictIdFlag];
   for (var d = 0; d < dictIdSize; d++) dictionaryId |= bytes[at + d] << (8 * d);
   at += dictIdSize;
 
   var contentSize = null;
-  var fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : FCS_SIZE[fcsFlag];
   if (fcsSize === 1) contentSize = bytes[at];
-  else if (fcsSize === 2) contentSize = bytes.readUInt16LE(at) + 256;
-  else if (fcsSize === 4) contentSize = bytes.readUInt32LE(at);
-  else if (fcsSize === 8) contentSize = Number(bytes.readBigUInt64LE(at));
+  else if (fcsSize === 2) contentSize = bin.readU16(bytes, at) + 256;
+  else if (fcsSize === 4) contentSize = bin.readU32(bytes, at);
+  else if (fcsSize === 8) contentSize = bin.readU64(bytes, at);
   at += fcsSize;
 
   if (singleSegment && contentSize !== null) windowSize = contentSize;
@@ -123,7 +136,7 @@ function decodeLiterals(bytes, offset, previousTable) {
       };
     }
     return {
-      literals: Buffer.alloc(regenerated, bytes[offset + headerSize]),
+      literals: bin.fill(bin.alloc(regenerated), bytes[offset + headerSize]),
       size: headerSize + 1,
       table: previousTable
     };
@@ -164,15 +177,15 @@ function decodeLiterals(bytes, offset, previousTable) {
     throw new Error('treeless literals with no previous Huffman table');
   }
 
-  var literals = Buffer.alloc(regen);
+  var literals = bin.alloc(regen);
   var streamsEnd = contentStart + compressed;
 
   if (streams === 1) {
     huffmanDecode.decodeStream(bytes.subarray(streamStart, streamsEnd), table, regen, literals, 0);
   } else {
-    var s1 = bytes.readUInt16LE(streamStart);
-    var s2 = bytes.readUInt16LE(streamStart + 2);
-    var s3 = bytes.readUInt16LE(streamStart + 4);
+    var s1 = bin.readU16(bytes, streamStart);
+    var s2 = bin.readU16(bytes, streamStart + 2);
+    var s3 = bin.readU16(bytes, streamStart + 4);
     var p = streamStart + 6;
     var segment = (regen + 3) >> 2;
 
@@ -373,7 +386,7 @@ function executeSequences(decoded, literals, output, written, reps) {
       if (literalLength < 24) {
         for (var l = 0; l < literalLength; l++) output[written + l] = literals[literalPosition + l];
       } else {
-        literals.copy(output, written, literalPosition, literalPosition + literalLength);
+        bin.copy(literals, output, written, literalPosition, literalPosition + literalLength);
       }
       literalPosition += literalLength;
       written += literalLength;
@@ -385,7 +398,7 @@ function executeSequences(decoded, literals, output, written, reps) {
 
     if (offset >= matchLength) {
       // Source and destination do not overlap, so this is a plain block move.
-      output.copy(output, written, from, from + matchLength);
+      bin.copy(output, output, written, from, from + matchLength);
     } else {
       // An overlapping match means "repeat what you just wrote". Lay down one
       // period, then double the region repeatedly: because the run is
@@ -395,13 +408,13 @@ function executeSequences(decoded, literals, output, written, reps) {
       if (offset < 16) {
         for (var p = 0; p < offset; p++) output[written + p] = output[from + p];
       } else {
-        output.copy(output, written, from, from + offset);
+        bin.copy(output, output, written, from, from + offset);
       }
 
       var filled = offset;
       while (filled < matchLength) {
         var span = filled < matchLength - filled ? filled : matchLength - filled;
-        output.copy(output, written + filled, written, written + span);
+        bin.copy(output, output, written + filled, written, written + span);
         filled += span;
       }
     }
@@ -410,7 +423,7 @@ function executeSequences(decoded, literals, output, written, reps) {
 
   var tail = literals.length - literalPosition;
   if (tail > 0) {
-    literals.copy(output, written, literalPosition, literals.length);
+    bin.copy(literals, output, written, literalPosition, literals.length);
     written += tail;
   }
 
@@ -431,13 +444,13 @@ function decodeFrame(bytes, options) {
   while (at < bytes.length) {
     if (bytes.length - at < 4) throw new Error('trailing bytes are not a frame');
 
-    var magic = bytes.readUInt32LE(at);
+    var magic = bin.readU32(bytes, at);
 
     // Section 3.1.2: a skippable frame is a magic in the reserved range
     // followed by its size, and carries nothing a decoder needs.
     if (magic >= c.MAGIC_SKIPPABLE_MIN && magic <= c.MAGIC_SKIPPABLE_MAX) {
       if (bytes.length - at < 8) throw new Error('truncated skippable frame');
-      var skipSize = bytes.readUInt32LE(at + 4);
+      var skipSize = bin.readU32(bytes, at + 4);
       at += 8 + skipSize;
       if (at > bytes.length) throw new Error('skippable frame runs past the end');
       continue;
@@ -451,7 +464,7 @@ function decodeFrame(bytes, options) {
 
   if (pieces.length === 0) throw new Error('not a Zstandard frame');
   if (pieces.length === 1) return pieces[0];
-  return Buffer.concat(pieces, total);
+  return bin.concat(pieces, total);
 }
 
 /**
@@ -463,7 +476,7 @@ function decodeSingleFrame(bytes, offset, options) {
   options = options || {};
   var parsed = options.dictionary
     ? dictionaryFormat.parse(options.dictionary)
-    : dictionaryFormat.parse(Buffer.alloc(0));
+    : dictionaryFormat.parse(bin.alloc(0));
   var dictionary = parsed.content;
 
   var header = parseFrameHeader(bytes, offset);
@@ -472,8 +485,8 @@ function decodeSingleFrame(bytes, offset, options) {
   // Output is preceded by the dictionary, so matches can reach into it.
   var capacity = dictionary.length +
     (header.contentSize !== null ? header.contentSize : Math.max((bytes.length - at) * 8, 1 << 20));
-  var output = Buffer.alloc(capacity);
-  dictionary.copy(output, 0);
+  var output = bin.alloc(capacity);
+  bin.copy(dictionary, output, 0);
 
   var written = dictionary.length;
 
@@ -486,7 +499,7 @@ function decodeSingleFrame(bytes, offset, options) {
   for (;;) {
     if (at + 3 > bytes.length) throw new Error('truncated block header');
 
-    var blockHeader = bytes.readUIntLE(at, 3);
+    var blockHeader = bin.readU24(bytes, at);
     at += 3;
 
     var last = blockHeader & 1;
@@ -495,7 +508,7 @@ function decodeSingleFrame(bytes, offset, options) {
 
     if (type === c.BLOCK_RAW) {
       output = ensure(output, written + size);
-      bytes.copy(output, written, at, at + size);
+      bin.copy(bytes, output, written, at, at + size);
       written += size;
       at += size;
     } else if (type === c.BLOCK_RLE) {
@@ -528,7 +541,7 @@ function decodeSingleFrame(bytes, offset, options) {
 
   if (header.checksum) {
     if (at + 4 > bytes.length) throw new Error('missing content checksum');
-    var stored = bytes.readUInt32LE(at);
+    var stored = bin.readU32(bytes, at);
     if (stored !== xxhash.checksum32(content)) {
       throw new Error('content checksum mismatch');
     }
@@ -539,7 +552,7 @@ function decodeSingleFrame(bytes, offset, options) {
   // Returning the view avoids copying the whole output again. It is only
   // worth copying when the buffer is much larger than what was decoded.
   return {
-    content: output.length - written > (written >> 2) ? Buffer.from(content) : content,
+    content: output.length - written > (written >> 2) ? bin.slice(content, 0) : content,
     end: at
   };
 }
@@ -553,10 +566,11 @@ function totalMatch(decoded) {
 
 function ensure(buffer, needed) {
   if (needed <= buffer.length) return buffer;
-  var size = buffer.length * 2;
+  // Doubling from zero never reaches the target, so start from something.
+  var size = buffer.length > 0 ? buffer.length * 2 : 1024;
   while (size < needed) size *= 2;
-  var next = Buffer.alloc(size);
-  buffer.copy(next);
+  var next = bin.alloc(size);
+  bin.copy(buffer, next);
   return next;
 }
 
@@ -570,17 +584,17 @@ function ensure(buffer, needed) {
 function StreamingDecoder(onData, options) {
   options = options || {};
   this.onData = onData;
-  this.dictionary = options.dictionary || Buffer.alloc(0);
+  this.dictionary = options.dictionary || bin.alloc(0);
 
   var parsedDictionary = dictionaryFormat.parse(this.dictionary);
   this.dictionary = parsedDictionary.content;
 
-  this.input = Buffer.alloc(0);
+  this.input = bin.alloc(0);
   this.consumed = 0;
 
   this.header = null;
-  this.output = Buffer.alloc(Math.max(this.dictionary.length * 2, 1 << 16));
-  this.dictionary.copy(this.output, 0);
+  this.output = bin.alloc(Math.max(this.dictionary.length * 2, 1 << 16));
+  bin.copy(this.dictionary, this.output, 0);
   this.written = this.dictionary.length;
   this.emitted = this.dictionary.length;
 
@@ -602,8 +616,8 @@ StreamingDecoder.prototype.push = function (chunk, final) {
   }
 
   this.input = this.consumed > 0
-    ? Buffer.concat([this.input.subarray(this.consumed), chunk])
-    : Buffer.concat([this.input, chunk]);
+    ? bin.concat([this.input.subarray(this.consumed), chunk])
+    : bin.concat([this.input, chunk]);
   this.consumed = 0;
 
   this._advance();
@@ -637,7 +651,7 @@ StreamingDecoder.prototype._advance = function () {
     var available = this.input.length - this.consumed;
     if (available < 3) return;
 
-    var blockHeader = this.input.readUIntLE(this.consumed, 3);
+    var blockHeader = bin.readU24(this.input, this.consumed);
     var last = blockHeader & 1;
     var type = (blockHeader >> 1) & 3;
     var size = blockHeader >> 3;
@@ -649,7 +663,7 @@ StreamingDecoder.prototype._advance = function () {
 
     if (type === c.BLOCK_RAW) {
       this.output = ensure(this.output, this.written + size);
-      this.input.copy(this.output, this.written, at, at + size);
+      bin.copy(this.input, this.output, this.written, at, at + size);
       this.written += size;
     } else if (type === c.BLOCK_RLE) {
       this.output = ensure(this.output, this.written + size);
@@ -686,7 +700,9 @@ StreamingDecoder.prototype._advance = function () {
 
 StreamingDecoder.prototype._flush = function (final) {
   if (this.written > this.emitted || final) {
-    var chunk = Buffer.from(this.output.subarray(this.emitted, this.written));
+    // Must be a copy: the output buffer is written to and reallocated
+    // after this chunk has been handed out.
+    var chunk = bin.slice(this.output, this.emitted, this.written);
     this.emitted = this.written;
     this.onData(chunk, final);
   }
@@ -696,7 +712,7 @@ StreamingDecoder.prototype._finish = function () {
   if (this.header.checksum) {
     // Wait for the trailing checksum rather than failing on a short read.
     if (this.input.length - this.consumed < 4) return;
-    var stored = this.input.readUInt32LE(this.consumed);
+    var stored = bin.readU32(this.input, this.consumed);
     var content = this.output.subarray(this.dictionary.length, this.written);
     if (stored !== xxhash.checksum32(content)) {
       throw new Error('content checksum mismatch');

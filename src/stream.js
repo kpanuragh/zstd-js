@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Streaming compression.
 //
 // Input arrives in pieces and blocks are emitted as soon as enough has
@@ -39,7 +41,7 @@ function Compress(onData, options) {
   this.historyLimit = this.options.streamHistory === undefined
     ? c.BLOCK_SIZE_MAX
     : this.options.streamHistory;
-  this.history = Buffer.alloc(0);
+  this.history = bin.alloc(0);
   this.hasher = this.checksum ? new xxhash.Xxh64Stream(0n) : null;
   this.started = false;
   this.finished = false;
@@ -57,7 +59,7 @@ Compress.prototype.push = function (chunk, final) {
     this.started = true;
     // Content size is unknown mid-stream, so the header carries a window
     // descriptor instead of Frame_Content_Size.
-    this.onData(frame.writeFrameHeader(null, { checksum: this.checksum }), false);
+    this.onData(bin.external(frame.writeFrameHeader(null, { checksum: this.checksum })), false);
   }
 
   if (chunk.length > 0) {
@@ -82,11 +84,11 @@ Compress.prototype.push = function (chunk, final) {
 
 /** Finish the frame without adding more input. */
 Compress.prototype.end = function () {
-  return this.push(Buffer.alloc(0), true);
+  return this.push(bin.alloc(0), true);
 };
 
 Compress.prototype._take = function (size) {
-  var joined = Buffer.concat(this.pending, this.pendingLength);
+  var joined = bin.concat(this.pending, this.pendingLength);
   var head = joined.subarray(0, size);
   var tail = joined.subarray(size);
 
@@ -101,7 +103,7 @@ Compress.prototype._emit = function (data, last) {
   if (this.history.length > 0 && data.length > 0) {
     // Index the retained history ahead of this block so matches can reach
     // back into what has already been emitted.
-    var combined = Buffer.concat([this.history, data]);
+    var combined = bin.concat([this.history, data]);
     var finder = new matchFinder.MatchFinder(combined, this.options);
     finder.prime(this.history.length);
     encoded = block.encodeBlock(data, this.reps, this.options,
@@ -113,7 +115,7 @@ Compress.prototype._emit = function (data, last) {
   this.reps = encoded.reps;
 
   if (this.historyLimit > 0 && data.length > 0) {
-    var carried = Buffer.concat([this.history, data]);
+    var carried = bin.concat([this.history, data]);
     this.history = carried.length > this.historyLimit
       ? carried.subarray(carried.length - this.historyLimit)
       : carried;
@@ -123,25 +125,24 @@ Compress.prototype._emit = function (data, last) {
   var header = frame.writeBlockHeader(declared, encoded.type, last);
 
   if (!last) {
-    this.onData(Buffer.concat([header, encoded.content]), false);
+    this.onData(bin.external(bin.concat([header, encoded.content])), false);
     return;
   }
 
   var parts = [header, encoded.content];
   if (this.hasher) {
-    var trailer = Buffer.alloc(4);
-    trailer.writeUInt32LE(Number(this.hasher.digest() & 0xFFFFFFFFn), 0);
+    var trailer = bin.alloc(4);
+    bin.writeU32(trailer, Number(this.hasher.digest() & 0xFFFFFFFFn), 0);
     parts.push(trailer);
   }
-  this.onData(Buffer.concat(parts), true);
+  this.onData(bin.external(bin.concat(parts)), true);
 };
 
 function toBytes(input) {
-  if (input === undefined || input === null) return Buffer.alloc(0);
-  if (typeof input === 'string') return Buffer.from(input, 'utf8');
-  if (Buffer.isBuffer(input)) return input;
-  if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
-  if (input instanceof ArrayBuffer) return Buffer.from(input);
+  if (input === undefined || input === null) return bin.alloc(0);
+  if (typeof input === 'string') return bin.from(input);
+  if (input instanceof Uint8Array) return input;
+  if (ArrayBuffer.isView(input) || input instanceof ArrayBuffer) return bin.from(input);
   throw new TypeError('input must be a string, Buffer, TypedArray, DataView or ArrayBuffer');
 }
 
@@ -156,7 +157,9 @@ function Decompress(onData, options) {
     throw new TypeError('Decompress requires a callback: new Decompress((chunk, final) => ...)');
   }
   options = options || {};
-  this.inner = new decode.StreamingDecoder(onData, {
+  this.inner = new decode.StreamingDecoder(function (chunk, final) {
+    onData(bin.external(chunk), final);
+  }, {
     dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
   });
 }
@@ -167,7 +170,7 @@ Decompress.prototype.push = function (chunk, final) {
 };
 
 Decompress.prototype.end = function () {
-  return this.push(Buffer.alloc(0), true);
+  return this.push(bin.alloc(0), true);
 };
 
 exports.Compress = Compress;

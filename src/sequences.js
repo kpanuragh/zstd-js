@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Sequences_Section encoding (RFC 8878 Section 3.1.1.3.2).
 
 var c = require('./constants');
@@ -40,10 +42,10 @@ function offsetCode(offset) {
 
 // Section 3.1.1.3.2: Number_of_Sequences is 1 to 3 bytes.
 function writeSequenceCount(count) {
-  if (count < 128) return Buffer.from([count]);
-  if (count < 0x7F00) return Buffer.from([(count >> 8) + 128, count & 0xFF]);
+  if (count < 128) return bin.from([count]);
+  if (count < 0x7F00) return bin.from([(count >> 8) + 128, count & 0xFF]);
   var rest = count - 0x7F00;
-  return Buffer.from([255, rest & 0xFF, (rest >> 8) & 0xFF]);
+  return bin.from([255, rest & 0xFF, (rest >> 8) & 0xFF]);
 }
 
 /**
@@ -58,7 +60,7 @@ function encodeSequences(sequences, reps) {
   reps = reps || repcodes.INITIAL.slice();
 
   if (sequences.length === 0) {
-    return { section: Buffer.from([0]), reps: reps };
+    return { section: bin.from([0]), reps: reps };
   }
 
   var count = sequences.length;
@@ -123,7 +125,7 @@ function encodeSequences(sequences, reps) {
 
   // Section 3.1.1.3.2.1: modes pack as literal lengths, offsets, match
   // lengths; the low two bits are reserved and must be zero.
-  var modes = Buffer.from([(ll.mode << 6) | (of.mode << 4) | (ml.mode << 2)]);
+  var modes = bin.from([(ll.mode << 6) | (of.mode << 4) | (ml.mode << 2)]);
 
   // Tables follow the header in the order literal lengths, offsets, match
   // lengths.
@@ -133,7 +135,7 @@ function encodeSequences(sequences, reps) {
   if (ml.description) parts.push(ml.description);
   parts.push(bitstream);
 
-  return { section: Buffer.concat(parts), reps: history };
+  return { section: bin.concat(parts), reps: history };
 }
 
 // Sequence count below which a transmitted table cannot pay for itself.
@@ -155,7 +157,7 @@ function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, predefine
     var only = codes[0];
     return {
       mode: c.MODE_RLE,
-      description: Buffer.from([only]),
+      description: bin.from([only]),
       table: rleTable(only, maxSymbol)
     };
   }

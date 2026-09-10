@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Block encoding: choose between Raw, RLE and Compressed representations.
 
 var c = require('./constants');
@@ -32,7 +34,7 @@ function encodeBlock(src, reps, options, finder, start, end) {
 
   if (size > 1 && isRun(src, 0, size)) {
     // Section 3.1.1.5: only Compressed_Blocks contribute to offset history.
-    return { type: c.BLOCK_RLE, content: Buffer.from([src[0]]), regeneratedSize: size, reps: reps };
+    return { type: c.BLOCK_RLE, content: bin.from([src[0]]), regeneratedSize: size, reps: reps };
   }
 
   var compressed = tryCompressed(src, reps, options, finder, start, end);
@@ -138,7 +140,7 @@ function tryCompressed(src, reps, options, finder, start, end) {
   if (encoded === null) return null;
 
   return {
-    content: Buffer.concat([literalsSection, encoded.section]),
+    content: bin.concat([literalsSection, encoded.section]),
     reps: encoded.reps
   };
 }
@@ -152,7 +154,7 @@ function encodeLiterals(literals) {
 
   var huff = huffman.compressLiterals(literals);
   if (huff !== null) {
-    var content = Buffer.concat([huff.tree, huff.streams]);
+    var content = bin.concat([huff.tree, huff.streams]);
     var section = literalsCodec.writeCompressedLiterals(content, literals.length, huff.streamCount);
     // Only worth it if it actually beats storing them.
     if (section !== null && section.length < literals.length + 3) return section;

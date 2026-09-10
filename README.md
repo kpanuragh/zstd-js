@@ -6,7 +6,7 @@
 
 Zstandard compression and decompression in pure JavaScript. No WebAssembly, no native bindings — it runs anywhere JavaScript does, including React Native and Hermes.
 
-> A complete Zstandard codec with **no dependencies**. Compression does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Decompression reads frames from any encoder, including features this one never emits. Both directions stream, and both support dictionaries. Every frame is verified against libzstd.
+> A complete Zstandard codec with **no dependencies** and no reliance on Node's `Buffer`. Compression does LZ77 matching, Huffman-coded literals, FSE-coded sequences with custom tables, and repeat offsets. Decompression reads frames from any encoder, including features this one never emits. Both directions stream, and both support dictionaries. Every frame is verified against libzstd.
 
 ## Install
 
@@ -24,16 +24,25 @@ const back = zstd.decompress(frame);   // <Buffer 68 65 6c 6c 6f ...>
 ```
 
 `compress` accepts a string, `Buffer`, `TypedArray`, `DataView` or
-`ArrayBuffer`, and returns a `Buffer` holding a standard `.zst` frame. Any
-Zstandard decoder reads it — the `zstd` CLI, Node's built-in
-`zlib.zstdDecompressSync`, `fzstd`, or this package's own `decompress`.
+`ArrayBuffer`, and returns a standard `.zst` frame. Any Zstandard decoder
+reads it — the `zstd` CLI, Node's built-in `zlib.zstdDecompressSync`,
+`fzstd`, or this package's own `decompress`.
+
+Results are a Node `Buffer` where the runtime has one, and a plain
+`Uint8Array` otherwise. A `Buffer` is a `Uint8Array`, so the same code works
+in both; nothing internally depends on `Buffer` existing, so there is no
+polyfill to install in a browser or under Hermes.
 
 ```js
 zstd.compress(data, {
   checksum: true,        // append the XXH64 content checksum (4 bytes)
-  searchDepth: 64,       // match finder effort, default 32
   windowSize: 1 << 20,   // farthest a match may reach back, default 4 MiB
-  dictionary: dict       // see below
+  dictionary: dict,      // see below
+
+  // Effort knobs. See "On compression levels" below before reaching for them.
+  searchDepth: 32,       // candidates examined per position
+  maxMisses: 16,         // consecutive first-byte failures before giving up
+  goodEnough: 64         // match length at which the search stops early
 });
 
 zstd.decompress(frame, { dictionary: dict });
@@ -97,6 +106,27 @@ frames of user metadata. `decompress` walks the whole stream, joining the
 content and stepping over anything skippable.
 
 TypeScript definitions ship with the package.
+
+### On compression levels
+
+There is deliberately no `level` option. Levels imply that asking for more
+effort yields a smaller result, and that is not true of this parser. Measured
+across a mixed corpus, raising every effort knob together — search depth 4 to
+256 — moved total output by well under a percent in *both* directions while
+costing six times the time:
+
+| effort | speed | total output |
+|---|---|---|
+| lowest | 30 MB/s | 307,769 |
+| low | 30 MB/s | 298,066 |
+| default | 22 MB/s | 303,013 |
+| high | 12 MB/s | 303,189 |
+| highest | 5 MB/s | 304,010 |
+
+The match finder already finds the longest matches available; the gap to real
+zstd is in *which* matches get chosen, not how hard it looks for them. The
+knobs are exposed for anyone who wants to trade time for a specific corpus,
+but they are not a level scale and are not documented as one.
 
 ## Why
 
@@ -173,6 +203,8 @@ measurement: `fzstd` is not a dependency, so the build cannot recheck them.
 - [x] Decoder, replacing the last dependency
 - [x] Word-at-a-time bit extraction and an inlined Huffman loop
 - [x] Incompressible input detected and passed through
+- [x] Runs without Node's `Buffer`, so browsers and Hermes need no polyfill
+- [x] `exports` map, so bundlers and TypeScript resolve it directly
 - [x] Multi-frame and skippable-frame decoding
 - [x] Trained dictionary format, both directions
 - [x] Table modes priced against each other rather than picked by rule
@@ -223,6 +255,7 @@ to 22.
   prices whole paths instead of deciding position by position; a first attempt
   at one came out worse than the current greedy-plus-lazy parser and is not
   shipped.
+- There is no `level` option, for the reason above.
 - Trained dictionaries are used for their content, repeat offsets and
   identifier. Their entropy tables seed the repeat modes but the encoder does
   not yet emit those modes itself, so a little of their benefit is unused.

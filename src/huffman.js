@@ -1,5 +1,7 @@
 'use strict';
 
+var bin = require('./bytes');
+
 // Huffman coding for literals (RFC 8878 Section 4.2).
 //
 // Like FSE bitstreams, Huffman streams are read backward, so symbols are
@@ -154,7 +156,7 @@ function writeTreeDescription(lengths, maxBits, present) {
   if (lastSymbol > 127) return null;
 
   var count = lastSymbol; // weights for symbols 0..lastSymbol-1
-  var bytes = Buffer.alloc(1 + Math.ceil(count / 2));
+  var bytes = bin.alloc(1 + Math.ceil(count / 2));
   bytes[0] = 127 + count;
 
   for (var i = 0; i < count; i++) {
@@ -216,16 +218,16 @@ function compressLiterals(literals) {
   }
 
   // Section 3.1.1.3.1.6: three little-endian sizes; the fourth is inferred.
-  var jump = Buffer.alloc(6);
-  jump.writeUInt16LE(parts[0].length, 0);
-  jump.writeUInt16LE(parts[1].length, 2);
-  jump.writeUInt16LE(parts[2].length, 4);
+  var jump = bin.alloc(6);
+  bin.writeU16(jump, parts[0].length, 0);
+  bin.writeU16(jump, parts[1].length, 2);
+  bin.writeU16(jump, parts[2].length, 4);
 
   if (parts[0].length > 65535 || parts[1].length > 65535 || parts[2].length > 65535) return null;
 
   return {
     tree: tree,
-    streams: Buffer.concat([jump, parts[0], parts[1], parts[2], parts[3]]),
+    streams: bin.concat([jump, parts[0], parts[1], parts[2], parts[3]]),
     streamCount: 4
   };
 }
